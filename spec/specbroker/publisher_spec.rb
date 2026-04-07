@@ -7,7 +7,7 @@ RSpec.describe Specbroker::Publisher do
   let(:output) { StringIO.new }
   let(:key) { 'pr-123-run-456' }
 
-  subject(:publisher) { described_class.new(key: key, queue: queue, output: output) }
+  subject(:publisher) { described_class.new(key: key, key_ttl: 21_600, queue: queue, output: output) }
 
   before do
     # Ensure stdin appears as a TTY so we test the other paths
@@ -15,9 +15,9 @@ RSpec.describe Specbroker::Publisher do
   end
 
   describe '#publish with direct file arguments' do
-    it 'pushes files to the queue and returns count' do
+    it 'pushes files to the queue with ttl and returns count' do
       files = ['spec/a_spec.rb', 'spec/b_spec.rb']
-      expect(queue).to receive(:push).with(key, files).and_return(2)
+      expect(queue).to receive(:push).with(key, files, ttl: 21_600).and_return(2)
 
       count = publisher.publish(files: files)
 
@@ -30,7 +30,8 @@ RSpec.describe Specbroker::Publisher do
     it 'resolves files via Dir.glob' do
       allow(Dir).to receive(:glob).with('spec/**/*_spec.rb')
                                   .and_return(['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb'])
-      expect(queue).to receive(:push).with(key, ['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb']).and_return(3)
+      expect(queue).to receive(:push).with(key, ['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb'],
+                                           ttl: 21_600).and_return(3)
 
       count = publisher.publish(pattern: 'spec/**/*_spec.rb')
 
@@ -46,7 +47,7 @@ RSpec.describe Specbroker::Publisher do
       allow($stdin).to receive(:each_line).and_return(stdin_content.each_line)
 
       expect(queue).to receive(:push)
-        .with(key, ['spec/x_spec.rb', 'spec/y_spec.rb'])
+        .with(key, ['spec/x_spec.rb', 'spec/y_spec.rb'], ttl: 21_600)
         .and_return(2)
 
       count = publisher.publish

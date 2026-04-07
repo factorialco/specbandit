@@ -69,6 +69,7 @@ specbroker push [options] [files...]
   --key KEY            Redis queue key (required)
   --pattern PATTERN    Glob pattern for file discovery
   --redis-url URL      Redis URL (default: redis://localhost:6379)
+  --key-ttl SECONDS    TTL for the Redis key (default: 21600 / 6 hours)
 
 specbroker work [options]
   --key KEY            Redis queue key (required)
@@ -86,6 +87,7 @@ All CLI options can be set via environment variables:
 | `SPECBROKER_KEY` | Redis queue key | _(required)_ |
 | `SPECBROKER_REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
 | `SPECBROKER_BATCH_SIZE` | Files per steal | `5` |
+| `SPECBROKER_KEY_TTL` | Key expiry in seconds | `21600` (6 hours) |
 | `SPECBROKER_RSPEC_OPTS` | Space-separated RSpec options | _(none)_ |
 
 CLI flags take precedence over environment variables.
@@ -99,6 +101,7 @@ Specbroker.configure do |c|
   c.redis_url  = "redis://my-redis:6379"
   c.key        = "pr-123-run-456"
   c.batch_size = 10
+  c.key_ttl    = 7200 # 2 hours (default: 21600 / 6 hours)
   c.rspec_opts = ["--format", "documentation"]
 end
 
@@ -144,7 +147,7 @@ jobs:
 
 ## How it works
 
-- **Push** uses `RPUSH` to append all file paths to a Redis list in a single command.
+- **Push** uses `RPUSH` to append all file paths to a Redis list in a single command, then sets `EXPIRE` on the key (default: 6 hours) to ensure stale queues are automatically cleaned up.
 - **Steal** uses `LPOP key count` (Redis 6.2+), which atomically pops up to N elements. No Lua scripts, no locks, no race conditions.
 - **Run** uses `RSpec::Core::Runner.run` in-process with `RSpec.clear_examples` between batches to reset example state while preserving configuration. No subprocess forking overhead.
 - **Exit code** is 0 if every batch passed (or the queue was already empty), 1 if any batch had failures.

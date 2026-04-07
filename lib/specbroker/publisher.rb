@@ -2,10 +2,12 @@
 
 module Specbroker
   class Publisher
-    attr_reader :queue, :key, :output
+    attr_reader :queue, :key, :key_ttl, :output
 
-    def initialize(key: Specbroker.configuration.key, queue: nil, output: $stdout)
+    def initialize(key: Specbroker.configuration.key, key_ttl: Specbroker.configuration.key_ttl, queue: nil,
+                   output: $stdout)
       @key = key
+      @key_ttl = key_ttl
       @queue = queue || RedisQueue.new
       @output = output
     end
@@ -22,8 +24,8 @@ module Specbroker
         return 0
       end
 
-      queue.push(key, resolved)
-      output.puts "[specbroker] Enqueued #{resolved.size} files onto key '#{key}'."
+      queue.push(key, resolved, ttl: key_ttl)
+      output.puts "[specbroker] Enqueued #{resolved.size} files onto key '#{key}' (TTL: #{key_ttl}s)."
       resolved.size
     end
 

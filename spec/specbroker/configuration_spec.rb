@@ -21,6 +21,10 @@ RSpec.describe Specbroker::Configuration do
     it 'has empty rspec_opts by default' do
       expect(config.rspec_opts).to eq([])
     end
+
+    it 'uses default key_ttl of 6 hours' do
+      expect(config.key_ttl).to eq(21_600)
+    end
   end
 
   describe 'environment variable overrides' do
@@ -29,7 +33,8 @@ RSpec.describe Specbroker::Configuration do
         'SPECBROKER_REDIS_URL',
         'SPECBROKER_BATCH_SIZE',
         'SPECBROKER_KEY',
-        'SPECBROKER_RSPEC_OPTS'
+        'SPECBROKER_RSPEC_OPTS',
+        'SPECBROKER_KEY_TTL'
       )
       example.run
     ensure
@@ -37,6 +42,7 @@ RSpec.describe Specbroker::Configuration do
       ENV.delete('SPECBROKER_BATCH_SIZE')
       ENV.delete('SPECBROKER_KEY')
       ENV.delete('SPECBROKER_RSPEC_OPTS')
+      ENV.delete('SPECBROKER_KEY_TTL')
       original_env.each { |k, v| ENV[k] = v }
     end
 
@@ -63,6 +69,12 @@ RSpec.describe Specbroker::Configuration do
       config = described_class.new
       expect(config.rspec_opts).to eq(['--format', 'documentation', '--color'])
     end
+
+    it 'reads key_ttl from SPECBROKER_KEY_TTL' do
+      ENV['SPECBROKER_KEY_TTL'] = '3600'
+      config = described_class.new
+      expect(config.key_ttl).to eq(3600)
+    end
   end
 
   describe '#validate!' do
@@ -85,6 +97,14 @@ RSpec.describe Specbroker::Configuration do
       config.batch_size = 0
       expect { config.validate! }.to raise_error(
         Specbroker::Error, /batch_size must be a positive integer/
+      )
+    end
+
+    it 'raises when key_ttl is not positive' do
+      config.key = 'valid-key'
+      config.key_ttl = 0
+      expect { config.validate! }.to raise_error(
+        Specbroker::Error, /key_ttl must be a positive integer/
       )
     end
 

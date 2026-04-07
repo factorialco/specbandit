@@ -20,6 +20,22 @@ RSpec.describe Specbroker::RedisQueue do
       expect(result).to eq(3)
     end
 
+    it 'sets EXPIRE when ttl is provided' do
+      files = ['spec/a_spec.rb']
+      expect(redis_double).to receive(:rpush).with('my-key', files).and_return(1)
+      expect(redis_double).to receive(:expire).with('my-key', 3600)
+
+      queue.push('my-key', files, ttl: 3600)
+    end
+
+    it 'does not set EXPIRE when ttl is nil' do
+      files = ['spec/a_spec.rb']
+      expect(redis_double).to receive(:rpush).with('my-key', files).and_return(1)
+      expect(redis_double).not_to receive(:expire)
+
+      queue.push('my-key', files)
+    end
+
     it 'returns 0 for empty files without calling Redis' do
       expect(redis_double).not_to receive(:rpush)
       expect(queue.push('my-key', [])).to eq(0)

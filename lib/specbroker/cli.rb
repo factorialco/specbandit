@@ -63,6 +63,10 @@ module Specbroker
           Specbroker.configuration.redis_url = v
         end
 
+        opts.on('--key-ttl SECONDS', Integer, 'TTL for the Redis key in seconds (default: 21600 / 6 hours)') do |v|
+          Specbroker.configuration.key_ttl = v
+        end
+
         opts.on('-h', '--help', 'Show this help') do
           puts opts
           return 0
@@ -124,6 +128,7 @@ module Specbroker
           --key KEY            Redis queue key (required, or set SPECBROKER_KEY)
           --pattern PATTERN    Glob pattern for file discovery (e.g. 'spec/**/*_spec.rb')
           --redis-url URL      Redis URL (default: redis://localhost:6379)
+          --key-ttl SECONDS    TTL for the Redis key (default: 21600 / 6 hours)
 
         Work options:
           --key KEY            Redis queue key (required, or set SPECBROKER_KEY)
@@ -135,6 +140,7 @@ module Specbroker
           SPECBROKER_KEY          Queue key
           SPECBROKER_REDIS_URL    Redis URL
           SPECBROKER_BATCH_SIZE   Batch size
+          SPECBROKER_KEY_TTL      Key TTL in seconds (default: 21600)
           SPECBROKER_RSPEC_OPTS   RSpec options
 
         File input priority for push:

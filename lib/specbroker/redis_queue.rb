@@ -10,12 +10,14 @@ module Specbroker
       @redis = Redis.new(url: redis_url)
     end
 
-    # Push file paths onto the queue.
+    # Push file paths onto the queue and set an expiry on the key.
     # Returns the new length of the list.
-    def push(key, files)
+    def push(key, files, ttl: nil)
       return 0 if files.empty?
 
-      redis.rpush(key, files)
+      count = redis.rpush(key, files)
+      redis.expire(key, ttl) if ttl
+      count
     end
 
     # Atomically steal up to `count` file paths from the queue.
