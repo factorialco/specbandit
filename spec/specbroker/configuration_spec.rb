@@ -25,6 +25,14 @@ RSpec.describe Specbroker::Configuration do
     it 'uses default key_ttl of 6 hours' do
       expect(config.key_ttl).to eq(21_600)
     end
+
+    it 'has nil key_rerun by default' do
+      expect(config.key_rerun).to be_nil
+    end
+
+    it 'uses default key_rerun_ttl of 1 week' do
+      expect(config.key_rerun_ttl).to eq(604_800)
+    end
   end
 
   describe 'environment variable overrides' do
@@ -34,7 +42,9 @@ RSpec.describe Specbroker::Configuration do
         'SPECBROKER_BATCH_SIZE',
         'SPECBROKER_KEY',
         'SPECBROKER_RSPEC_OPTS',
-        'SPECBROKER_KEY_TTL'
+        'SPECBROKER_KEY_TTL',
+        'SPECBROKER_KEY_RERUN',
+        'SPECBROKER_KEY_RERUN_TTL'
       )
       example.run
     ensure
@@ -43,6 +53,8 @@ RSpec.describe Specbroker::Configuration do
       ENV.delete('SPECBROKER_KEY')
       ENV.delete('SPECBROKER_RSPEC_OPTS')
       ENV.delete('SPECBROKER_KEY_TTL')
+      ENV.delete('SPECBROKER_KEY_RERUN')
+      ENV.delete('SPECBROKER_KEY_RERUN_TTL')
       original_env.each { |k, v| ENV[k] = v }
     end
 
@@ -75,6 +87,18 @@ RSpec.describe Specbroker::Configuration do
       config = described_class.new
       expect(config.key_ttl).to eq(3600)
     end
+
+    it 'reads key_rerun from SPECBROKER_KEY_RERUN' do
+      ENV['SPECBROKER_KEY_RERUN'] = 'pr-42-run-99-runner-3'
+      config = described_class.new
+      expect(config.key_rerun).to eq('pr-42-run-99-runner-3')
+    end
+
+    it 'reads key_rerun_ttl from SPECBROKER_KEY_RERUN_TTL' do
+      ENV['SPECBROKER_KEY_RERUN_TTL'] = '86400'
+      config = described_class.new
+      expect(config.key_rerun_ttl).to eq(86_400)
+    end
   end
 
   describe '#validate!' do
@@ -105,6 +129,14 @@ RSpec.describe Specbroker::Configuration do
       config.key_ttl = 0
       expect { config.validate! }.to raise_error(
         Specbroker::Error, /key_ttl must be a positive integer/
+      )
+    end
+
+    it 'raises when key_rerun_ttl is not positive' do
+      config.key = 'valid-key'
+      config.key_rerun_ttl = 0
+      expect { config.validate! }.to raise_error(
+        Specbroker::Error, /key_rerun_ttl must be a positive integer/
       )
     end
 

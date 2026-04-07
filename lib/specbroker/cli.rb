@@ -103,6 +103,14 @@ module Specbroker
           Specbroker.configuration.rspec_opts = v.split
         end
 
+        opts.on('--key-rerun KEY', 'Per-runner rerun key for re-run support') do |v|
+          Specbroker.configuration.key_rerun = v
+        end
+
+        opts.on('--key-rerun-ttl SECONDS', Integer, 'TTL for rerun key in seconds (default: 604800 / 1 week)') do |v|
+          Specbroker.configuration.key_rerun_ttl = v
+        end
+
         opts.on('-h', '--help', 'Show this help') do
           puts opts
           return 0
@@ -135,13 +143,17 @@ module Specbroker
           --batch-size N       Files per batch (default: 5, or set SPECBROKER_BATCH_SIZE)
           --redis-url URL      Redis URL (default: redis://localhost:6379)
           --rspec-opts OPTS    Extra options forwarded to RSpec
+          --key-rerun KEY      Per-runner rerun key for re-run support
+          --key-rerun-ttl N    TTL for rerun key (default: 604800 / 1 week)
 
         Environment variables:
-          SPECBROKER_KEY          Queue key
-          SPECBROKER_REDIS_URL    Redis URL
-          SPECBROKER_BATCH_SIZE   Batch size
-          SPECBROKER_KEY_TTL      Key TTL in seconds (default: 21600)
-          SPECBROKER_RSPEC_OPTS   RSpec options
+          SPECBROKER_KEY              Queue key
+          SPECBROKER_REDIS_URL        Redis URL
+          SPECBROKER_BATCH_SIZE       Batch size
+          SPECBROKER_KEY_TTL          Key TTL in seconds (default: 21600)
+          SPECBROKER_RSPEC_OPTS       RSpec options
+          SPECBROKER_KEY_RERUN        Per-runner rerun key
+          SPECBROKER_KEY_RERUN_TTL    Rerun key TTL in seconds (default: 604800)
 
         File input priority for push:
           1. stdin (piped)     echo "spec/a_spec.rb" | specbroker push --key KEY

@@ -74,6 +74,23 @@ RSpec.describe Specbroker::RedisQueue do
     end
   end
 
+  describe '#read_all' do
+    it 'returns all elements via LRANGE non-destructively' do
+      files = ['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb']
+      expect(redis_double).to receive(:lrange).with('my-key', 0, -1).and_return(files)
+
+      result = queue.read_all('my-key')
+      expect(result).to eq(files)
+    end
+
+    it 'returns empty array when key does not exist' do
+      expect(redis_double).to receive(:lrange).with('missing-key', 0, -1).and_return([])
+
+      result = queue.read_all('missing-key')
+      expect(result).to eq([])
+    end
+  end
+
   describe '#close' do
     it 'closes the Redis connection' do
       expect(redis_double).to receive(:close)

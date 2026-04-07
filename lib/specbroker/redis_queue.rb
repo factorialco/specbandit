@@ -41,6 +41,12 @@ module Specbroker
       redis.llen(key)
     end
 
+    # Read all file paths from the list non-destructively.
+    # Returns an array of file paths (empty array when key doesn't exist).
+    def read_all(key)
+      redis.lrange(key, 0, -1)
+    end
+
     def close
       redis.close
     end
