@@ -6,6 +6,20 @@ on:
     branches: [main]
 
 jobs:
+  unit-tests:
+    name: "Unit tests"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+
+      - name: Run unit tests
+        run: bundle exec rspec --exclude-pattern 'spec/integration/**'
+
   dogfood:
     name: "Dogfood: specbandit runs its own specs"
     runs-on: ubuntu-latest
@@ -27,11 +41,26 @@ jobs:
           ruby-version: "3.3"
           bundler-cache: true
 
-      - name: Push unit specs to Redis queue
+      - name: Generate slow spec files to force work distribution
+        run: |
+          mkdir -p tmp/dogfood_specs
+          for i in $(seq 1 12); do
+            cat > "tmp/dogfood_specs/slow_${i}_spec.rb" <<'RUBY'
+          RSpec.describe "Dogfood spec SPEC_NUM" do
+            it "passes (with simulated work)" do
+              sleep 0.5
+              expect(true).to eq(true)
+            end
+          end
+          RUBY
+            sed -i "s/SPEC_NUM/${i}/" "tmp/dogfood_specs/slow_${i}_spec.rb"
+          done
+
+      - name: Push specs to Redis queue
         run: |
           bundle exec specbandit push \
             --key "dogfood-${{ github.run_id }}" \
-            --pattern 'spec/specbandit/**/*_spec.rb'
+            --pattern 'tmp/dogfood_specs/*_spec.rb'
 
       - name: Run 3 concurrent workers (work-stealing)
         run: |
@@ -68,7 +97,7 @@ jobs:
             echo "| Worker | Files | Status |"
             echo "|--------|-------|--------|"
             for i in 1 2 3; do
-              FILES=$(grep "^  spec/" "worker-${i}.log" | sed 's/^  //' | tr '\n' ', ' | sed 's/,$//')
+              FILES=$(grep "^  tmp/\|^  spec/" "worker-${i}.log" | sed 's/^  //' | tr '\n' ', ' | sed 's/,$//')
               if grep -q "SOME FAILED\|FAILED" "worker-${i}.log"; then
                 STATUS="Failed"
               elif grep -q "Nothing to do" "worker-${i}.log"; then
