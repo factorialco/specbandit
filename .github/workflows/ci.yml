@@ -4,12 +4,6 @@ on:
   pull_request:
   push:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: "Git ref to check out"
-        required: false
-        type: string
 
 jobs:
   unit-tests:
@@ -17,8 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || '' }}
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -43,8 +35,6 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || '' }}
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -148,8 +138,6 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || '' }}
 
       - uses: ruby/setup-ruby@v1
         with:

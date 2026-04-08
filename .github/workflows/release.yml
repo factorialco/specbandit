@@ -13,20 +13,21 @@ on:
           - major
 
 jobs:
-  create-release-pr:
-    name: "Create release PR"
+  release:
+    name: "Release"
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
-      actions: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PUBLISH_TOKEN }}
 
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
+          bundler-cache: true
 
       - name: Bump version
         id: bump
@@ -55,35 +56,32 @@ jobs:
       - name: Update Gemfile.lock
         run: bundle install
 
-      - name: Create release branch and PR
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Commit and push version bump
         run: |
           VERSION="${{ steps.bump.outputs.version }}"
-          BRANCH="release/v${VERSION}"
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
           git add lib/specbandit/version.rb Gemfile.lock
           git commit -m "Release v${VERSION}"
-          git push origin "$BRANCH"
+          git push origin main
 
-          gh pr create \
-            --title "Release v${VERSION}" \
-            --body "Bump version to **v${VERSION}** (\`${{ inputs.bump }}\` release).
-
-          Once CI passes and this PR is merged, the gem will be automatically published to RubyGems and a GitHub Release will be created." \
-            --base main \
-            --head "$BRANCH"
-
-          echo "### Release PR created for v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Trigger CI on release branch
+      - name: Create tag and GitHub Release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: |
           VERSION="${{ steps.bump.outputs.version }}"
-          BRANCH="release/v${VERSION}"
-          gh workflow run ci.yml --ref "$BRANCH" -f ref="$BRANCH"
-          echo "CI workflow dispatched for branch ${BRANCH}" >> "$GITHUB_STEP_SUMMARY"
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --generate-notes
+
+      - name: Summary
+        run: |
+          VERSION="${{ steps.bump.outputs.version }}"
+          {
+            echo "## Released v${VERSION}"
+            echo ""
+            echo "- [GitHub Release](https://github.com/${{ github.repository }}/releases/tag/v${VERSION})"
+            echo "- RubyGems publish will be handled by trusted publishers"
+          } >> "$GITHUB_STEP_SUMMARY"
