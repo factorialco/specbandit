@@ -13,19 +13,15 @@ on:
           - major
 
 jobs:
-  release:
-    name: "Release"
+  create-release-pr:
+    name: "Create release PR"
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
-
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.3"
-          bundler-cache: true
 
       - name: Bump version
         id: bump
@@ -50,29 +46,27 @@ jobs:
 
           NEW_VERSION=$(ruby -r ./lib/specbandit/version -e 'puts Specbandit::VERSION')
           echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "### Version bumped to v${NEW_VERSION}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Commit and tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add lib/specbandit/version.rb
-          git commit -m "Release v${{ steps.bump.outputs.version }}"
-          git tag "v${{ steps.bump.outputs.version }}"
-          git push origin main --tags
-
-      - name: Build gem
-        run: gem build specbandit.gemspec
-
-      - name: Publish to RubyGems
-        env:
-          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
-        run: gem push specbandit-${{ steps.bump.outputs.version }}.gem
-
-      - name: Create GitHub Release
+      - name: Create release branch and PR
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "v${{ steps.bump.outputs.version }}"
-          --title "v${{ steps.bump.outputs.version }}"
-          --generate-notes
+        run: |
+          VERSION="${{ steps.bump.outputs.version }}"
+          BRANCH="release/v${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add lib/specbandit/version.rb
+          git commit -m "Release v${VERSION}"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "Release v${VERSION}" \
+            --body "Bump version to **v${VERSION}** (\`${{ inputs.bump }}\` release).
+
+          Once CI passes and this PR is merged, the gem will be automatically published to RubyGems and a GitHub Release will be created." \
+            --base main \
+            --head "$BRANCH"
+
+          echo "### Release PR created for v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
