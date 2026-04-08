@@ -11,6 +11,9 @@ RSpec.describe Specbandit::Worker do
   before do
     allow(RSpec).to receive(:clear_examples)
     allow(RSpec::Core::Runner).to receive(:run).and_return(0)
+    allow(RSpec.world).to receive(:wants_to_quit=)
+    allow(RSpec.world).to receive(:non_example_failure=)
+    allow(RSpec.configuration).to receive(:output_stream=)
   end
 
   describe '#run' do
@@ -113,6 +116,45 @@ RSpec.describe Specbandit::Worker do
         expect(queue).to receive(:steal).with(key, 2).and_return(['spec/a_spec.rb'])
         expect(queue).to receive(:steal).with(key, 2).and_return([])
         expect(queue).not_to receive(:push)
+
+        worker.run
+      end
+
+      it 'resets wants_to_quit before each batch' do
+        expect(queue).to receive(:steal).with(key, 2)
+                                        .and_return(['spec/a_spec.rb'])
+        expect(queue).to receive(:steal).with(key, 2)
+                                        .and_return(['spec/b_spec.rb'])
+        expect(queue).to receive(:steal).with(key, 2)
+                                        .and_return([])
+
+        expect(RSpec.world).to receive(:wants_to_quit=).with(false).twice
+
+        worker.run
+      end
+
+      it 'resets non_example_failure before each batch' do
+        expect(queue).to receive(:steal).with(key, 2)
+                                        .and_return(['spec/a_spec.rb'])
+        expect(queue).to receive(:steal).with(key, 2)
+                                        .and_return(['spec/b_spec.rb'])
+        expect(queue).to receive(:steal).with(key, 2)
+                                        .and_return([])
+
+        expect(RSpec.world).to receive(:non_example_failure=).with(false).twice
+
+        worker.run
+      end
+
+      it 'resets output_stream to $stdout before each batch' do
+        expect(queue).to receive(:steal).with(key, 2)
+                                        .and_return(['spec/a_spec.rb'])
+        expect(queue).to receive(:steal).with(key, 2)
+                                        .and_return(['spec/b_spec.rb'])
+        expect(queue).to receive(:steal).with(key, 2)
+                                        .and_return([])
+
+        expect(RSpec.configuration).to receive(:output_stream=).with($stdout).twice
 
         worker.run
       end

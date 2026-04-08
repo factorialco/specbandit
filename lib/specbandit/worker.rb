@@ -116,10 +116,7 @@ module Specbandit
     end
 
     def run_rspec_batch(files)
-      # Clear example state from previous batches so RSpec can run cleanly
-      # in the same process. This preserves configuration but resets
-      # the world (example groups, examples, shared groups, etc.).
-      RSpec.clear_examples
+      reset_rspec_state
 
       args = files + rspec_opts
       err = StringIO.new
@@ -133,6 +130,34 @@ module Specbandit
 
       rspec_err = err&.string
       output.print(rspec_err) unless rspec_err.nil? || rspec_err.empty?
+    end
+
+    # Reset RSpec state between batches so each batch runs cleanly.
+    #
+    # RSpec.clear_examples resets example groups, the reporter, filters, and
+    # the start-time clock -- but it leaves three critical pieces of state
+    # that cause cascading failures when running multiple batches in the
+    # same process:
+    #
+    # 1. output_stream -- After batch #1, Runner#configure sets
+    #    output_stream to a StringIO. On batch #2+, the guard
+    #    `if output_stream == $stdout` is permanently false, so the new
+    #    `out` is never used. All RSpec output silently goes to the stale
+    #    batch-1 StringIO.
+    #
+    # 2. wants_to_quit -- If any batch triggers a load error or fail-fast,
+    #    this flag is set to true. On subsequent batches, Runner#setup
+    #    returns immediately and Runner#run does exit_early -- specs are
+    #    never loaded or run.
+    #
+    # 3. non_example_failure -- Once set, exit_code() unconditionally
+    #    returns the failure exit code, even if all examples passed.
+    #
+    def reset_rspec_state
+      RSpec.clear_examples
+      RSpec.world.wants_to_quit = false
+      RSpec.world.non_example_failure = false
+      RSpec.configuration.output_stream = $stdout
     end
   end
 end
