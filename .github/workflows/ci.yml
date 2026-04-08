@@ -20,8 +20,8 @@ jobs:
       - name: Run unit tests
         run: bundle exec rspec --exclude-pattern 'spec/integration/**'
 
-  dogfood:
-    name: "Dogfood: specbandit runs its own specs"
+  e2e:
+    name: "E2E: push/steal/run with 3 concurrent workers"
     runs-on: ubuntu-latest
     services:
       redis:
@@ -43,28 +43,28 @@ jobs:
 
       - name: Generate slow spec files to force work distribution
         run: |
-          mkdir -p tmp/dogfood_specs
+          mkdir -p tmp/e2e_specs
           for i in $(seq 1 12); do
-            cat > "tmp/dogfood_specs/slow_${i}_spec.rb" <<'RUBY'
-          RSpec.describe "Dogfood spec SPEC_NUM" do
+            cat > "tmp/e2e_specs/slow_${i}_spec.rb" <<'RUBY'
+          RSpec.describe "E2E spec SPEC_NUM" do
             it "passes (with simulated work)" do
               sleep 0.5
               expect(true).to eq(true)
             end
           end
           RUBY
-            sed -i "s/SPEC_NUM/${i}/" "tmp/dogfood_specs/slow_${i}_spec.rb"
+            sed -i "s/SPEC_NUM/${i}/" "tmp/e2e_specs/slow_${i}_spec.rb"
           done
 
       - name: Push specs to Redis queue
         run: |
           bundle exec specbandit push \
-            --key "dogfood-${{ github.run_id }}" \
-            --pattern 'tmp/dogfood_specs/*_spec.rb'
+            --key "e2e-${{ github.run_id }}" \
+            --pattern 'tmp/e2e_specs/*_spec.rb'
 
       - name: Run 3 concurrent workers (work-stealing)
         run: |
-          KEY="dogfood-${{ github.run_id }}"
+          KEY="e2e-${{ github.run_id }}"
 
           bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w1" --batch-size 1 > worker-1.log 2>&1 &
           PID1=$!
@@ -90,7 +90,7 @@ jobs:
 
           # Generate job summary
           {
-            echo "## Dogfood Results"
+            echo "## E2E Results"
             echo ""
             echo "3 workers competed for specs via \`specbandit work\` (work-stealing from a shared Redis queue)."
             echo ""
