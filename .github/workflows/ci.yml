@@ -21,7 +21,7 @@ jobs:
         run: bundle exec rspec --exclude-pattern 'spec/integration/**'
 
   e2e:
-    name: "E2E: push/steal/run with 3 concurrent workers"
+    name: "E2E"
     runs-on: ubuntu-latest
     services:
       redis:
@@ -41,11 +41,15 @@ jobs:
           ruby-version: "3.3"
           bundler-cache: true
 
-      - name: Generate slow spec files to force work distribution
+      # ── Scenario 1: all specs pass ──
+
+      - name: "Scenario 1: All specs pass"
+        id: scenario1
         run: |
-          mkdir -p tmp/e2e_specs
+          # Generate 12 passing spec files with simulated work
+          mkdir -p tmp/e2e_pass_specs
           for i in $(seq 1 12); do
-            cat > "tmp/e2e_specs/slow_${i}_spec.rb" <<'RUBY'
+            cat > "tmp/e2e_pass_specs/slow_${i}_spec.rb" <<'RUBY'
           RSpec.describe "E2E spec SPEC_NUM" do
             it "passes (with simulated work)" do
               sleep 0.5
@@ -53,24 +57,22 @@ jobs:
             end
           end
           RUBY
-            sed -i "s/SPEC_NUM/${i}/" "tmp/e2e_specs/slow_${i}_spec.rb"
+            sed -i "s/SPEC_NUM/${i}/" "tmp/e2e_pass_specs/slow_${i}_spec.rb"
           done
 
-      - name: Push specs to Redis queue
-        run: |
+          # Push to Redis
           bundle exec specbandit push \
-            --key "e2e-${{ github.run_id }}" \
-            --pattern 'tmp/e2e_specs/*_spec.rb'
+            --key "e2e-pass-${{ github.run_id }}" \
+            --pattern 'tmp/e2e_pass_specs/*_spec.rb'
 
-      - name: Run 3 concurrent workers (work-stealing)
-        run: |
-          KEY="e2e-${{ github.run_id }}"
+          # Run 3 concurrent workers
+          KEY="e2e-pass-${{ github.run_id }}"
 
-          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w1" --batch-size 1 > worker-1.log 2>&1 &
+          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w1" --batch-size 1 > pass-worker-1.log 2>&1 &
           PID1=$!
-          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w2" --batch-size 1 > worker-2.log 2>&1 &
+          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w2" --batch-size 1 > pass-worker-2.log 2>&1 &
           PID2=$!
-          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w3" --batch-size 1 > worker-3.log 2>&1 &
+          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w3" --batch-size 1 > pass-worker-3.log 2>&1 &
           PID3=$!
 
           FAIL=0
@@ -78,29 +80,25 @@ jobs:
           wait $PID2 || FAIL=1
           wait $PID3 || FAIL=1
 
-          echo "========== Worker 1 =========="
-          cat worker-1.log
-          echo ""
-          echo "========== Worker 2 =========="
-          cat worker-2.log
-          echo ""
-          echo "========== Worker 3 =========="
-          cat worker-3.log
-          echo ""
-
-          # Generate job summary
-          {
-            echo "## E2E Results"
+          for i in 1 2 3; do
+            echo "========== Worker ${i} =========="
+            cat "pass-worker-${i}.log"
             echo ""
-            echo "3 workers competed for specs via \`specbandit work\` (work-stealing from a shared Redis queue)."
+          done
+
+          # Write summary
+          {
+            echo "## Scenario 1: All specs pass"
+            echo ""
+            echo "3 workers competed for 12 passing specs via work-stealing."
             echo ""
             echo "| Worker | Files | Status |"
             echo "|--------|-------|--------|"
             for i in 1 2 3; do
-              FILES=$(grep "^  tmp/\|^  spec/" "worker-${i}.log" | sed 's/^  //' | tr '\n' ', ' | sed 's/,$//')
-              if grep -q "SOME FAILED\|FAILED" "worker-${i}.log"; then
+              FILES=$(grep "^  tmp/\|^  spec/" "pass-worker-${i}.log" | sed 's/^  //' | tr '\n' ', ' | sed 's/,$//')
+              if grep -q "SOME FAILED\|FAILED" "pass-worker-${i}.log"; then
                 STATUS="Failed"
-              elif grep -q "Nothing to do" "worker-${i}.log"; then
+              elif grep -q "Nothing to do" "pass-worker-${i}.log"; then
                 STATUS="Idle (queue was empty)"
               else
                 STATUS="Passed"
@@ -114,7 +112,7 @@ jobs:
               echo "### Worker ${i}"
               echo ""
               echo '```'
-              cat "worker-${i}.log"
+              cat "pass-worker-${i}.log"
               echo '```'
               echo ""
             done
@@ -122,6 +120,149 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           exit $FAIL
+
+      # ── Scenario 2: some specs fail ──
+
+      - name: "Scenario 2: Some specs fail"
+        id: scenario2
+        if: always()
+        run: |
+          # Generate 8 passing + 4 failing spec files
+          mkdir -p tmp/e2e_fail_specs
+          for i in $(seq 1 8); do
+            cat > "tmp/e2e_fail_specs/pass_${i}_spec.rb" <<RUBY
+          RSpec.describe "E2E passing spec ${i}" do
+            it "passes (with simulated work)" do
+              sleep 0.3
+              expect(true).to eq(true)
+            end
+          end
+          RUBY
+          done
+          for i in $(seq 1 4); do
+            cat > "tmp/e2e_fail_specs/fail_${i}_spec.rb" <<RUBY
+          RSpec.describe "E2E failing spec ${i}" do
+            it "fails deliberately" do
+              expect(true).to eq(false)
+            end
+          end
+          RUBY
+          done
+
+          # Push to Redis
+          bundle exec specbandit push \
+            --key "e2e-fail-${{ github.run_id }}" \
+            --pattern 'tmp/e2e_fail_specs/*_spec.rb'
+
+          # Run 3 concurrent workers
+          KEY="e2e-fail-${{ github.run_id }}"
+
+          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w1" --batch-size 1 > fail-worker-1.log 2>&1 &
+          PID1=$!
+          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w2" --batch-size 1 > fail-worker-2.log 2>&1 &
+          PID2=$!
+          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w3" --batch-size 1 > fail-worker-3.log 2>&1 &
+          PID3=$!
+
+          W1_EXIT=0; wait $PID1 || W1_EXIT=$?
+          W2_EXIT=0; wait $PID2 || W2_EXIT=$?
+          W3_EXIT=0; wait $PID3 || W3_EXIT=$?
+
+          for i in 1 2 3; do
+            EXIT_VAR="W${i}_EXIT"
+            echo "========== Worker ${i} (exit: $(eval echo "\$$EXIT_VAR")) =========="
+            cat "fail-worker-${i}.log"
+            echo ""
+          done
+
+          # --- Assertions ---
+          ERRORS=0
+
+          # At least one worker must have failed
+          if [ "$W1_EXIT" -eq 0 ] && [ "$W2_EXIT" -eq 0 ] && [ "$W3_EXIT" -eq 0 ]; then
+            echo "::error::Expected at least one worker to exit with code 1, but all exited 0"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # All 12 spec files must appear across the worker logs
+          TOTAL_FILES=$(cat fail-worker-*.log | grep "^  tmp/" | wc -l | tr -d ' ')
+          if [ "$TOTAL_FILES" -ne 12 ]; then
+            echo "::error::Expected 12 spec files across all workers, found $TOTAL_FILES"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # At least one worker log must contain "SOME FAILED"
+          if ! grep -q "SOME FAILED" fail-worker-*.log; then
+            echo "::error::No worker reported 'SOME FAILED'"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # At least one batch passed somewhere
+          if ! grep -q "passed\." fail-worker-*.log; then
+            echo "::error::No worker reported any passing batch"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # At least one batch failed somewhere
+          if ! grep -q "FAILED (exit code:" fail-worker-*.log; then
+            echo "::error::No worker reported any failing batch"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Every worker must have exhausted the queue or had nothing to do
+          for i in 1 2 3; do
+            if ! grep -q "Queue exhausted\|Nothing to do" "fail-worker-${i}.log"; then
+              echo "::error::Worker ${i} did not exhaust the queue or report nothing to do"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          # Write summary
+          {
+            echo "## Scenario 2: Some specs fail"
+            echo ""
+            echo "3 workers competed for a mix of 8 passing and 4 failing specs."
+            echo ""
+            echo "| Worker | Exit | Files | Status |"
+            echo "|--------|------|-------|--------|"
+            for i in 1 2 3; do
+              EXIT_VAR="W${i}_EXIT"
+              EXIT_CODE=$(eval echo "\$$EXIT_VAR")
+              FILES=$(grep "^  tmp/\|^  spec/" "fail-worker-${i}.log" | sed 's/^  //' | tr '\n' ', ' | sed 's/,$//')
+              if grep -q "SOME FAILED" "fail-worker-${i}.log"; then
+                STATUS="Failed"
+              elif grep -q "Nothing to do" "fail-worker-${i}.log"; then
+                STATUS="Idle (queue was empty)"
+              else
+                STATUS="Passed"
+              fi
+              echo "| Worker ${i} | ${EXIT_CODE} | \`${FILES:-none}\` | ${STATUS} |"
+            done
+            echo ""
+            echo "<details><summary>Full worker logs</summary>"
+            echo ""
+            for i in 1 2 3; do
+              echo "### Worker ${i}"
+              echo ""
+              echo '```'
+              cat "fail-worker-${i}.log"
+              echo '```'
+              echo ""
+            done
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit $ERRORS
+
+      # ── Final gate ──
+
+      - name: "Check all scenarios passed"
+        if: always()
+        run: |
+          if [ "${{ steps.scenario1.outcome }}" != "success" ] || [ "${{ steps.scenario2.outcome }}" != "success" ]; then
+            echo "::error::One or more E2E scenarios failed"
+            exit 1
+          fi
 
   integration-tests:
     name: "Integration tests"
