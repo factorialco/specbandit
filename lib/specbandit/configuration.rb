@@ -3,7 +3,7 @@
 module Specbandit
   class Configuration
     attr_accessor :redis_url, :batch_size, :key, :rspec_opts, :key_ttl,
-                  :key_rerun, :key_rerun_ttl
+                  :key_rerun, :key_rerun_ttl, :verbose
 
     DEFAULT_REDIS_URL = 'redis://localhost:6379'
     DEFAULT_BATCH_SIZE = 5
@@ -18,6 +18,7 @@ module Specbandit
       @key_ttl = Integer(ENV.fetch('SPECBANDIT_KEY_TTL', DEFAULT_KEY_TTL))
       @key_rerun = ENV.fetch('SPECBANDIT_KEY_RERUN', nil)
       @key_rerun_ttl = Integer(ENV.fetch('SPECBANDIT_KEY_RERUN_TTL', DEFAULT_KEY_RERUN_TTL))
+      @verbose = env_truthy?('SPECBANDIT_VERBOSE')
     end
 
     def validate!
@@ -33,6 +34,10 @@ module Specbandit
       return [] if opts.nil? || opts.empty?
 
       opts.split
+    end
+
+    def env_truthy?(name)
+      %w[1 true yes].include?(ENV.fetch(name, '').downcase)
     end
   end
 end
