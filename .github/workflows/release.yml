@@ -23,6 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+
       - name: Bump version
         id: bump
         run: |
@@ -47,6 +51,9 @@ jobs:
           NEW_VERSION=$(ruby -r ./lib/specbandit/version -e 'puts Specbandit::VERSION')
           echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
 
+      - name: Update Gemfile.lock
+        run: bundle install
+
       - name: Create release branch and PR
         env:
           GH_TOKEN: ${{ github.token }}
@@ -57,7 +64,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add lib/specbandit/version.rb
+          git add lib/specbandit/version.rb Gemfile.lock
           git commit -m "Release v${VERSION}"
           git push origin "$BRANCH"
 
