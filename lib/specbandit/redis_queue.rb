@@ -2,11 +2,11 @@
 
 require 'redis'
 
-module Specbroker
+module Specbandit
   class RedisQueue
     attr_reader :redis
 
-    def initialize(redis_url: Specbroker.configuration.redis_url)
+    def initialize(redis_url: Specbandit.configuration.redis_url)
       @redis = Redis.new(url: redis_url)
     end
 

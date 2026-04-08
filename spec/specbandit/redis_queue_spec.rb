@@ -2,7 +2,7 @@
 
 require 'spec_helper'
 
-RSpec.describe Specbroker::RedisQueue do
+RSpec.describe Specbandit::RedisQueue do
   let(:redis_double) { instance_double(Redis) }
 
   subject(:queue) { described_class.new }

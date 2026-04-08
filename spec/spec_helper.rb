@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-require 'specbroker'
+require 'specbandit'
 
 RSpec.configure do |config|
   config.before(:each) do
-    Specbroker.reset_configuration!
+    Specbandit.reset_configuration!
   end
 end

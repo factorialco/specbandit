@@ -1,4 +1,4 @@
-# specbroker
+# specbandit
 
 Distributed RSpec runner using Redis as a work queue. One process pushes spec file paths to a Redis list; multiple CI runners atomically steal batches and execute them in-process via `RSpec::Core::Runner`.
 
@@ -16,13 +16,13 @@ CI Job N (worker):  LPOP key 5  <--  [Redis List]  -->  RSpec
 Add to your Gemfile:
 
 ```ruby
-gem "specbroker"
+gem "specbandit"
 ```
 
 Or install directly:
 
 ```bash
-gem install specbroker
+gem install specbandit
 ```
 
 **Requirements**: Ruby >= 3.0, Redis >= 6.2
@@ -35,13 +35,13 @@ A single CI job enqueues all spec file paths before workers start.
 
 ```bash
 # Via glob pattern (resolved in Ruby, avoids shell ARG_MAX limits)
-specbroker push --key pr-123-run-456 --pattern 'spec/**/*_spec.rb'
+specbandit push --key pr-123-run-456 --pattern 'spec/**/*_spec.rb'
 
 # Via stdin pipe (for large file lists or custom filtering)
-find spec -name '*_spec.rb' | specbroker push --key pr-123-run-456
+find spec -name '*_spec.rb' | specbandit push --key pr-123-run-456
 
 # Via direct arguments (for small lists)
-specbroker push --key pr-123-run-456 spec/models/user_spec.rb spec/models/order_spec.rb
+specbandit push --key pr-123-run-456 spec/models/user_spec.rb spec/models/order_spec.rb
 ```
 
 File input priority: **stdin > --pattern > direct args**.
@@ -51,7 +51,7 @@ File input priority: **stdin > --pattern > direct args**.
 Each CI runner steals batches and runs them. Start as many runners as you want -- they'll divide the work automatically.
 
 ```bash
-specbroker work --key pr-123-run-456 --batch-size 10
+specbandit work --key pr-123-run-456 --batch-size 10
 ```
 
 Each worker loops:
@@ -65,13 +65,13 @@ A failing batch does **not** stop the worker. It continues stealing remaining wo
 ### CLI reference
 
 ```
-specbroker push [options] [files...]
+specbandit push [options] [files...]
   --key KEY              Redis queue key (required)
   --pattern PATTERN      Glob pattern for file discovery
   --redis-url URL        Redis URL (default: redis://localhost:6379)
   --key-ttl SECONDS      TTL for the Redis key (default: 21600 / 6 hours)
 
-specbroker work [options]
+specbandit work [options]
   --key KEY              Redis queue key (required)
   --batch-size N         Files per batch (default: 5)
   --redis-url URL        Redis URL (default: redis://localhost:6379)
@@ -86,22 +86,22 @@ All CLI options can be set via environment variables:
 
 | Variable | Description | Default |
 |---|---|---|
-| `SPECBROKER_KEY` | Redis queue key | _(required)_ |
-| `SPECBROKER_REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
-| `SPECBROKER_BATCH_SIZE` | Files per steal | `5` |
-| `SPECBROKER_KEY_TTL` | Key expiry in seconds | `21600` (6 hours) |
-| `SPECBROKER_RSPEC_OPTS` | Space-separated RSpec options | _(none)_ |
-| `SPECBROKER_KEY_RERUN` | Per-runner rerun key | _(none)_ |
-| `SPECBROKER_KEY_RERUN_TTL` | Rerun key expiry in seconds | `604800` (1 week) |
+| `SPECBANDIT_KEY` | Redis queue key | _(required)_ |
+| `SPECBANDIT_REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
+| `SPECBANDIT_BATCH_SIZE` | Files per steal | `5` |
+| `SPECBANDIT_KEY_TTL` | Key expiry in seconds | `21600` (6 hours) |
+| `SPECBANDIT_RSPEC_OPTS` | Space-separated RSpec options | _(none)_ |
+| `SPECBANDIT_KEY_RERUN` | Per-runner rerun key | _(none)_ |
+| `SPECBANDIT_KEY_RERUN_TTL` | Rerun key expiry in seconds | `604800` (1 week) |
 
 CLI flags take precedence over environment variables.
 
 ### Ruby API
 
 ```ruby
-require "specbroker"
+require "specbandit"
 
-Specbroker.configure do |c|
+Specbandit.configure do |c|
   c.redis_url      = "redis://my-redis:6379"
   c.key            = "pr-123-run-456"
   c.batch_size     = 10
@@ -112,11 +112,11 @@ Specbroker.configure do |c|
 end
 
 # Push
-publisher = Specbroker::Publisher.new
+publisher = Specbandit::Publisher.new
 publisher.publish(pattern: "spec/**/*_spec.rb")
 
 # Work (will auto-detect steal/record/replay mode based on key_rerun state)
-worker = Specbroker::Worker.new
+worker = Specbandit::Worker.new
 exit_code = worker.run
 ```
 
@@ -130,7 +130,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: bundle install
       - run: |
-          specbroker push \
+          specbandit push \
             --key "pr-${{ github.event.number }}-${{ github.run_id }}" \
             --redis-url "${{ secrets.REDIS_URL }}" \
             --pattern 'spec/**/*_spec.rb'
@@ -145,7 +145,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: bundle install
       - run: |
-          specbroker work \
+          specbandit work \
             --key "pr-${{ github.event.number }}-${{ github.run_id }}" \
             --redis-url "${{ secrets.REDIS_URL }}" \
             --batch-size 10
@@ -155,23 +155,23 @@ jobs:
 
 ### The problem
 
-When you use specbroker to distribute tests across multiple CI runners (e.g. a GitHub Actions matrix with 4 runners), each runner **steals** a random subset of spec files from the shared Redis queue. The distribution is non-deterministic -- which runner gets which files depends on timing.
+When you use specbandit to distribute tests across multiple CI runners (e.g. a GitHub Actions matrix with 4 runners), each runner **steals** a random subset of spec files from the shared Redis queue. The distribution is non-deterministic -- which runner gets which files depends on timing.
 
 This creates a subtle but serious problem with CI re-runs:
 
 1. **First run**: Runner #3 steals and executes files X, Y, Z. File Y fails. The shared queue is now empty (all files were consumed across all runners).
-2. **Re-run of runner #3**: GitHub Actions re-runs only the failed runner. It starts `specbroker work` again with the same `--key`, but the shared queue is already empty. Runner #3 sees nothing to do and **exits 0 -- the failing test silently passes**.
+2. **Re-run of runner #3**: GitHub Actions re-runs only the failed runner. It starts `specbandit work` again with the same `--key`, but the shared queue is already empty. Runner #3 sees nothing to do and **exits 0 -- the failing test silently passes**.
 
 This happens because GitHub Actions re-runs **reuse the same `run_id`**, so the key resolves to the same (now empty) Redis list.
 
 ### The solution: `--key-rerun`
 
-The `--key-rerun` flag gives each matrix runner its own "memory" in Redis. It enables specbroker to **record** which files each runner executed, and **replay** exactly those files on a re-run.
+The `--key-rerun` flag gives each matrix runner its own "memory" in Redis. It enables specbandit to **record** which files each runner executed, and **replay** exactly those files on a re-run.
 
 Each runner gets a unique rerun key (typically including the matrix index):
 
 ```bash
-specbroker work \
+specbandit work \
   --key "pr-42-run-100" \
   --key-rerun "pr-42-run-100-runner-3" \
   --batch-size 10
@@ -179,7 +179,7 @@ specbroker work \
 
 ### How it works: three operating modes
 
-Specbroker detects the mode automatically based on the state of `--key-rerun`:
+Specbandit detects the mode automatically based on the state of `--key-rerun`:
 
 | `--key-rerun` provided? | Rerun key in Redis | Mode | Behavior |
 |---|---|---|---|
@@ -187,7 +187,7 @@ Specbroker detects the mode automatically based on the state of `--key-rerun`:
 | Yes | Empty | **Record** | Steal from shared queue + record each batch to the rerun key. |
 | Yes | Has data | **Replay** | Ignore shared queue entirely. Re-run exactly the recorded files. |
 
-**On first run**, the rerun key doesn't exist yet (empty), so specbroker enters **record mode**:
+**On first run**, the rerun key doesn't exist yet (empty), so specbandit enters **record mode**:
 
 ```
 ┌──────────────────┐   LPOP N    ┌──────────────────┐   RPUSH    ┌──────────────────────────────┐
@@ -199,7 +199,7 @@ Specbroker detects the mode automatically based on the state of `--key-rerun`:
 └──────────────────┘            └──────────────────┘           └──────────────────────────────┘
 ```
 
-**On re-run**, the rerun key already contains the files from the first run, so specbroker enters **replay mode**:
+**On re-run**, the rerun key already contains the files from the first run, so specbandit enters **replay mode**:
 
 ```
                                 ┌──────────────────┐  LRANGE    ┌──────────────────────────────┐
@@ -227,7 +227,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: bundle install
       - run: |
-          specbroker push \
+          specbandit push \
             --key "pr-${{ github.event.number }}-${{ github.run_id }}" \
             --redis-url "${{ secrets.REDIS_URL }}" \
             --pattern 'spec/**/*_spec.rb'
@@ -242,7 +242,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: bundle install
       - run: |
-          specbroker work \
+          specbandit work \
             --key "pr-${{ github.event.number }}-${{ github.run_id }}" \
             --key-rerun "pr-${{ github.event.number }}-${{ github.run_id }}-runner-${{ matrix.runner }}" \
             --redis-url "${{ secrets.REDIS_URL }}" \
@@ -277,11 +277,11 @@ Runners 1, 2, 4 are not started at all.
 
 The rerun key defaults to a **1 week TTL** (`604800` seconds). This is intentionally longer than the shared queue TTL (6 hours) because re-runs can happen hours or even days after the original CI run.
 
-Override via `--key-rerun-ttl` or `SPECBROKER_KEY_RERUN_TTL`:
+Override via `--key-rerun-ttl` or `SPECBANDIT_KEY_RERUN_TTL`:
 
 ```bash
 # Set rerun key to expire after 3 days
-specbroker work \
+specbandit work \
   --key "pr-42-run-100" \
   --key-rerun "pr-42-run-100-runner-3" \
   --key-rerun-ttl 259200

@@ -2,8 +2,8 @@
 
 require 'spec_helper'
 
-RSpec.describe Specbroker::Publisher do
-  let(:queue) { instance_double(Specbroker::RedisQueue) }
+RSpec.describe Specbandit::Publisher do
+  let(:queue) { instance_double(Specbandit::RedisQueue) }
   let(:output) { StringIO.new }
   let(:key) { 'pr-123-run-456' }
 

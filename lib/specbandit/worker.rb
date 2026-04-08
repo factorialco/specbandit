@@ -2,16 +2,16 @@
 
 require 'rspec/core'
 
-module Specbroker
+module Specbandit
   class Worker
     attr_reader :queue, :key, :batch_size, :rspec_opts, :key_rerun, :key_rerun_ttl, :output
 
     def initialize(
-      key: Specbroker.configuration.key,
-      batch_size: Specbroker.configuration.batch_size,
-      rspec_opts: Specbroker.configuration.rspec_opts,
-      key_rerun: Specbroker.configuration.key_rerun,
-      key_rerun_ttl: Specbroker.configuration.key_rerun_ttl,
+      key: Specbandit.configuration.key,
+      batch_size: Specbandit.configuration.batch_size,
+      rspec_opts: Specbandit.configuration.rspec_opts,
+      key_rerun: Specbandit.configuration.key_rerun,
+      key_rerun_ttl: Specbandit.configuration.key_rerun_ttl,
       queue: nil,
       output: $stdout
     )
@@ -46,27 +46,27 @@ module Specbroker
     # Used when re-running a failed CI job -- the rerun key already
     # contains the exact files this runner executed previously.
     def run_replay(files)
-      output.puts "[specbroker] Replay mode: found #{files.size} files in rerun key '#{key_rerun}'."
-      output.puts '[specbroker] Running previously recorded files (not touching shared queue).'
+      output.puts "[specbandit] Replay mode: found #{files.size} files in rerun key '#{key_rerun}'."
+      output.puts '[specbandit] Running previously recorded files (not touching shared queue).'
 
       failed = false
       batch_num = 0
 
       files.each_slice(batch_size) do |batch|
         batch_num += 1
-        output.puts "[specbroker] Batch ##{batch_num}: running #{batch.size} files"
+        output.puts "[specbandit] Batch ##{batch_num}: running #{batch.size} files"
         batch.each { |f| output.puts "  #{f}" }
 
         exit_code = run_rspec_batch(batch)
         if exit_code != 0
-          output.puts "[specbroker] Batch ##{batch_num} FAILED (exit code: #{exit_code})"
+          output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{exit_code})"
           failed = true
         else
-          output.puts "[specbroker] Batch ##{batch_num} passed."
+          output.puts "[specbandit] Batch ##{batch_num} passed."
         end
       end
 
-      output.puts "[specbroker] Replay finished: #{batch_num} batches. #{failed ? 'SOME FAILED' : 'All passed.'}"
+      output.puts "[specbandit] Replay finished: #{batch_num} batches. #{failed ? 'SOME FAILED' : 'All passed.'}"
       failed ? 1 : 0
     end
 
@@ -75,8 +75,8 @@ module Specbroker
     # rerun key so this runner can replay them on a re-run.
     def run_steal(record:)
       mode_label = record ? 'Record' : 'Steal'
-      output.puts "[specbroker] #{mode_label} mode: stealing batches from '#{key}'."
-      output.puts "[specbroker] Recording stolen files to rerun key '#{key_rerun}'." if record
+      output.puts "[specbandit] #{mode_label} mode: stealing batches from '#{key}'."
+      output.puts "[specbandit] Recording stolen files to rerun key '#{key_rerun}'." if record
 
       failed = false
       batch_num = 0
@@ -85,7 +85,7 @@ module Specbroker
         files = queue.steal(key, batch_size)
 
         if files.empty?
-          output.puts '[specbroker] Queue exhausted. No more files to run.'
+          output.puts '[specbandit] Queue exhausted. No more files to run.'
           break
         end
 
@@ -93,22 +93,22 @@ module Specbroker
         queue.push(key_rerun, files, ttl: key_rerun_ttl) if record
 
         batch_num += 1
-        output.puts "[specbroker] Batch ##{batch_num}: running #{files.size} files"
+        output.puts "[specbandit] Batch ##{batch_num}: running #{files.size} files"
         files.each { |f| output.puts "  #{f}" }
 
         exit_code = run_rspec_batch(files)
         if exit_code != 0
-          output.puts "[specbroker] Batch ##{batch_num} FAILED (exit code: #{exit_code})"
+          output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{exit_code})"
           failed = true
         else
-          output.puts "[specbroker] Batch ##{batch_num} passed."
+          output.puts "[specbandit] Batch ##{batch_num} passed."
         end
       end
 
       if batch_num.zero?
-        output.puts '[specbroker] Nothing to do (queue was empty).'
+        output.puts '[specbandit] Nothing to do (queue was empty).'
       else
-        output.puts "[specbroker] Finished #{batch_num} batches. #{failed ? 'SOME FAILED' : 'All passed.'}"
+        output.puts "[specbandit] Finished #{batch_num} batches. #{failed ? 'SOME FAILED' : 'All passed.'}"
       end
 
       failed ? 1 : 0

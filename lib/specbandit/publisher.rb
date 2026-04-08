@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-module Specbroker
+module Specbandit
   class Publisher
     attr_reader :queue, :key, :key_ttl, :output
 
-    def initialize(key: Specbroker.configuration.key, key_ttl: Specbroker.configuration.key_ttl, queue: nil,
+    def initialize(key: Specbandit.configuration.key, key_ttl: Specbandit.configuration.key_ttl, queue: nil,
                    output: $stdout)
       @key = key
       @key_ttl = key_ttl
@@ -20,12 +20,12 @@ module Specbroker
       resolved = resolve_files(files: files, pattern: pattern)
 
       if resolved.empty?
-        output.puts '[specbroker] No files to enqueue.'
+        output.puts '[specbandit] No files to enqueue.'
         return 0
       end
 
       queue.push(key, resolved, ttl: key_ttl)
-      output.puts "[specbroker] Enqueued #{resolved.size} files onto key '#{key}' (TTL: #{key_ttl}s)."
+      output.puts "[specbandit] Enqueued #{resolved.size} files onto key '#{key}' (TTL: #{key_ttl}s)."
       resolved.size
     end
 

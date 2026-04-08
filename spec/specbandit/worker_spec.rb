@@ -3,8 +3,8 @@
 require 'spec_helper'
 require 'rspec/core'
 
-RSpec.describe Specbroker::Worker do
-  let(:queue) { instance_double(Specbroker::RedisQueue) }
+RSpec.describe Specbandit::Worker do
+  let(:queue) { instance_double(Specbandit::RedisQueue) }
   let(:output) { StringIO.new }
   let(:key) { 'pr-123-run-456' }
 

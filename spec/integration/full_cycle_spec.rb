@@ -9,8 +9,8 @@ require 'fileutils'
 # Integration test that exercises the full push -> steal -> run cycle
 # using a real Redis connection. Skip if Redis is not available.
 RSpec.describe 'Full cycle integration', :integration do
-  let(:redis_url) { ENV.fetch('SPECBROKER_REDIS_URL', 'redis://localhost:6379') }
-  let(:key) { "specbroker-test-#{SecureRandom.hex(8)}" }
+  let(:redis_url) { ENV.fetch('SPECBANDIT_REDIS_URL', 'redis://localhost:6379') }
+  let(:key) { "specbandit-test-#{SecureRandom.hex(8)}" }
   let(:output) { StringIO.new }
 
   before(:each) do
@@ -37,7 +37,7 @@ RSpec.describe 'Full cycle integration', :integration do
     files = (1..7).map { |i| "spec/fake_#{i}_spec.rb" }
 
     # Push phase
-    queue = Specbroker::RedisQueue.new(redis_url: redis_url)
+    queue = Specbandit::RedisQueue.new(redis_url: redis_url)
     queue.push(key, files)
     expect(queue.length(key)).to eq(7)
 
@@ -64,14 +64,14 @@ RSpec.describe 'Full cycle integration', :integration do
   end
 
   it 'publisher and worker work end-to-end' do
-    Specbroker.configure do |c|
+    Specbandit.configure do |c|
       c.redis_url = redis_url
       c.key = key
       c.batch_size = 2
     end
 
     # Create temporary spec files that pass
-    dir = Dir.mktmpdir('specbroker-test')
+    dir = Dir.mktmpdir('specbandit-test')
     3.times do |i|
       File.write(File.join(dir, "pass_#{i}_spec.rb"), <<~RUBY)
         RSpec.describe "pass_#{i}" do
@@ -85,20 +85,20 @@ RSpec.describe 'Full cycle integration', :integration do
     spec_files = Dir.glob(File.join(dir, '*_spec.rb')).sort
 
     # Push
-    publisher = Specbroker::Publisher.new(
+    publisher = Specbandit::Publisher.new(
       key: key,
-      queue: Specbroker::RedisQueue.new(redis_url: redis_url),
+      queue: Specbandit::RedisQueue.new(redis_url: redis_url),
       output: output
     )
     count = publisher.publish(files: spec_files)
     expect(count).to eq(3)
 
     # Work
-    worker = Specbroker::Worker.new(
+    worker = Specbandit::Worker.new(
       key: key,
       batch_size: 2,
       rspec_opts: ['--format', 'progress', '--no-color'],
-      queue: Specbroker::RedisQueue.new(redis_url: redis_url),
+      queue: Specbandit::RedisQueue.new(redis_url: redis_url),
       output: output
     )
     exit_code = worker.run

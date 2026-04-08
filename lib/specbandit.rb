@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
-require 'specbroker/version'
-require 'specbroker/configuration'
-require 'specbroker/redis_queue'
-require 'specbroker/publisher'
-require 'specbroker/worker'
+require 'specbandit/version'
+require 'specbandit/configuration'
+require 'specbandit/redis_queue'
+require 'specbandit/publisher'
+require 'specbandit/worker'
 
-module Specbroker
+module Specbandit
   class Error < StandardError; end
 
   class << self

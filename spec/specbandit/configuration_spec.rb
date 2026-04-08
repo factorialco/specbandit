@@ -2,7 +2,7 @@
 
 require 'spec_helper'
 
-RSpec.describe Specbroker::Configuration do
+RSpec.describe Specbandit::Configuration do
   subject(:config) { described_class.new }
 
   describe 'defaults' do
@@ -38,64 +38,64 @@ RSpec.describe Specbroker::Configuration do
   describe 'environment variable overrides' do
     around do |example|
       original_env = ENV.to_h.slice(
-        'SPECBROKER_REDIS_URL',
-        'SPECBROKER_BATCH_SIZE',
-        'SPECBROKER_KEY',
-        'SPECBROKER_RSPEC_OPTS',
-        'SPECBROKER_KEY_TTL',
-        'SPECBROKER_KEY_RERUN',
-        'SPECBROKER_KEY_RERUN_TTL'
+        'SPECBANDIT_REDIS_URL',
+        'SPECBANDIT_BATCH_SIZE',
+        'SPECBANDIT_KEY',
+        'SPECBANDIT_RSPEC_OPTS',
+        'SPECBANDIT_KEY_TTL',
+        'SPECBANDIT_KEY_RERUN',
+        'SPECBANDIT_KEY_RERUN_TTL'
       )
       example.run
     ensure
-      ENV.delete('SPECBROKER_REDIS_URL')
-      ENV.delete('SPECBROKER_BATCH_SIZE')
-      ENV.delete('SPECBROKER_KEY')
-      ENV.delete('SPECBROKER_RSPEC_OPTS')
-      ENV.delete('SPECBROKER_KEY_TTL')
-      ENV.delete('SPECBROKER_KEY_RERUN')
-      ENV.delete('SPECBROKER_KEY_RERUN_TTL')
+      ENV.delete('SPECBANDIT_REDIS_URL')
+      ENV.delete('SPECBANDIT_BATCH_SIZE')
+      ENV.delete('SPECBANDIT_KEY')
+      ENV.delete('SPECBANDIT_RSPEC_OPTS')
+      ENV.delete('SPECBANDIT_KEY_TTL')
+      ENV.delete('SPECBANDIT_KEY_RERUN')
+      ENV.delete('SPECBANDIT_KEY_RERUN_TTL')
       original_env.each { |k, v| ENV[k] = v }
     end
 
-    it 'reads redis_url from SPECBROKER_REDIS_URL' do
-      ENV['SPECBROKER_REDIS_URL'] = 'redis://custom:6380'
+    it 'reads redis_url from SPECBANDIT_REDIS_URL' do
+      ENV['SPECBANDIT_REDIS_URL'] = 'redis://custom:6380'
       config = described_class.new
       expect(config.redis_url).to eq('redis://custom:6380')
     end
 
-    it 'reads batch_size from SPECBROKER_BATCH_SIZE' do
-      ENV['SPECBROKER_BATCH_SIZE'] = '10'
+    it 'reads batch_size from SPECBANDIT_BATCH_SIZE' do
+      ENV['SPECBANDIT_BATCH_SIZE'] = '10'
       config = described_class.new
       expect(config.batch_size).to eq(10)
     end
 
-    it 'reads key from SPECBROKER_KEY' do
-      ENV['SPECBROKER_KEY'] = 'pr-42-run-99'
+    it 'reads key from SPECBANDIT_KEY' do
+      ENV['SPECBANDIT_KEY'] = 'pr-42-run-99'
       config = described_class.new
       expect(config.key).to eq('pr-42-run-99')
     end
 
-    it 'parses rspec_opts from SPECBROKER_RSPEC_OPTS' do
-      ENV['SPECBROKER_RSPEC_OPTS'] = '--format documentation --color'
+    it 'parses rspec_opts from SPECBANDIT_RSPEC_OPTS' do
+      ENV['SPECBANDIT_RSPEC_OPTS'] = '--format documentation --color'
       config = described_class.new
       expect(config.rspec_opts).to eq(['--format', 'documentation', '--color'])
     end
 
-    it 'reads key_ttl from SPECBROKER_KEY_TTL' do
-      ENV['SPECBROKER_KEY_TTL'] = '3600'
+    it 'reads key_ttl from SPECBANDIT_KEY_TTL' do
+      ENV['SPECBANDIT_KEY_TTL'] = '3600'
       config = described_class.new
       expect(config.key_ttl).to eq(3600)
     end
 
-    it 'reads key_rerun from SPECBROKER_KEY_RERUN' do
-      ENV['SPECBROKER_KEY_RERUN'] = 'pr-42-run-99-runner-3'
+    it 'reads key_rerun from SPECBANDIT_KEY_RERUN' do
+      ENV['SPECBANDIT_KEY_RERUN'] = 'pr-42-run-99-runner-3'
       config = described_class.new
       expect(config.key_rerun).to eq('pr-42-run-99-runner-3')
     end
 
-    it 'reads key_rerun_ttl from SPECBROKER_KEY_RERUN_TTL' do
-      ENV['SPECBROKER_KEY_RERUN_TTL'] = '86400'
+    it 'reads key_rerun_ttl from SPECBANDIT_KEY_RERUN_TTL' do
+      ENV['SPECBANDIT_KEY_RERUN_TTL'] = '86400'
       config = described_class.new
       expect(config.key_rerun_ttl).to eq(86_400)
     end
@@ -105,14 +105,14 @@ RSpec.describe Specbroker::Configuration do
     it 'raises when key is nil' do
       config.key = nil
       expect { config.validate! }.to raise_error(
-        Specbroker::Error, /key is required/
+        Specbandit::Error, /key is required/
       )
     end
 
     it 'raises when key is empty' do
       config.key = ''
       expect { config.validate! }.to raise_error(
-        Specbroker::Error, /key is required/
+        Specbandit::Error, /key is required/
       )
     end
 
@@ -120,7 +120,7 @@ RSpec.describe Specbroker::Configuration do
       config.key = 'valid-key'
       config.batch_size = 0
       expect { config.validate! }.to raise_error(
-        Specbroker::Error, /batch_size must be a positive integer/
+        Specbandit::Error, /batch_size must be a positive integer/
       )
     end
 
@@ -128,7 +128,7 @@ RSpec.describe Specbroker::Configuration do
       config.key = 'valid-key'
       config.key_ttl = 0
       expect { config.validate! }.to raise_error(
-        Specbroker::Error, /key_ttl must be a positive integer/
+        Specbandit::Error, /key_ttl must be a positive integer/
       )
     end
 
@@ -136,7 +136,7 @@ RSpec.describe Specbroker::Configuration do
       config.key = 'valid-key'
       config.key_rerun_ttl = 0
       expect { config.validate! }.to raise_error(
-        Specbroker::Error, /key_rerun_ttl must be a positive integer/
+        Specbandit::Error, /key_rerun_ttl must be a positive integer/
       )
     end
 
