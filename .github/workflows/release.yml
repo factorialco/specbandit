@@ -20,6 +20,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -77,3 +78,12 @@ jobs:
             --head "$BRANCH"
 
           echo "### Release PR created for v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Trigger CI on release branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.bump.outputs.version }}"
+          BRANCH="release/v${VERSION}"
+          gh workflow run ci.yml --ref "$BRANCH" -f ref="$BRANCH"
+          echo "CI workflow dispatched for branch ${BRANCH}" >> "$GITHUB_STEP_SUMMARY"
