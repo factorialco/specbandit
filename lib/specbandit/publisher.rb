@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'io/wait'
+
 module Specbandit
   class Publisher
     attr_reader :queue, :key, :key_ttl, :output
@@ -32,8 +34,11 @@ module Specbandit
     private
 
     def resolve_files(files:, pattern:)
-      # Priority 1: stdin (if not a TTY)
-      return $stdin.each_line.map(&:strip).reject(&:empty?) unless $stdin.tty?
+      # Priority 1: stdin (only when data is actually piped in)
+      if !$stdin.tty? && $stdin.ready?
+        stdin_files = $stdin.each_line.map(&:strip).reject(&:empty?)
+        return stdin_files if stdin_files.any?
+      end
 
       # Priority 2: --pattern flag (Dir.glob in Ruby, no shell expansion)
       return Dir.glob(pattern).sort if pattern && !pattern.empty?
