@@ -12,6 +12,7 @@ RSpec.describe Specbandit::Publisher do
   before do
     # Ensure stdin appears as a TTY so we test the other paths
     allow($stdin).to receive(:tty?).and_return(true)
+    allow($stdin).to receive(:ready?).and_return(false)
   end
 
   describe '#publish with direct file arguments' do
@@ -44,6 +45,7 @@ RSpec.describe Specbandit::Publisher do
     it 'reads file paths from stdin' do
       stdin_content = StringIO.new("spec/x_spec.rb\nspec/y_spec.rb\n\n")
       allow($stdin).to receive(:tty?).and_return(false)
+      allow($stdin).to receive(:ready?).and_return(true)
       allow($stdin).to receive(:each_line).and_return(stdin_content.each_line)
 
       expect(queue).to receive(:push)
