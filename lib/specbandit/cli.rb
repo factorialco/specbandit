@@ -111,6 +111,10 @@ module Specbandit
           Specbandit.configuration.key_rerun_ttl = v
         end
 
+        opts.on('--verbose', 'Show per-batch file list and full RSpec output (default: quiet)') do
+          Specbandit.configuration.verbose = true
+        end
+
         opts.on('-h', '--help', 'Show this help') do
           puts opts
           return 0
@@ -119,6 +123,10 @@ module Specbandit
 
       parser.parse!(argv)
       Specbandit.configuration.validate!
+
+      # Remaining args after `--` are treated as extra rspec options.
+      # This allows: specbandit work --key KEY -- --format json --out results.json
+      Specbandit.configuration.rspec_opts = argv if argv.any?
 
       worker = Worker.new
       worker.run
@@ -145,6 +153,8 @@ module Specbandit
           --rspec-opts OPTS    Extra options forwarded to RSpec
           --key-rerun KEY      Per-runner rerun key for re-run support
           --key-rerun-ttl N    TTL for rerun key (default: 604800 / 1 week)
+          --verbose            Show per-batch file list and full RSpec output
+          -- OPTS...           Pass remaining args as RSpec options (alternative to --rspec-opts)
 
         Environment variables:
           SPECBANDIT_KEY              Queue key
@@ -154,6 +164,7 @@ module Specbandit
           SPECBANDIT_RSPEC_OPTS       RSpec options
           SPECBANDIT_KEY_RERUN        Per-runner rerun key
           SPECBANDIT_KEY_RERUN_TTL    Rerun key TTL in seconds (default: 604800)
+          SPECBANDIT_VERBOSE          Enable verbose output (1/true/yes)
 
         File input priority for push:
           1. stdin (piped)     echo "spec/a_spec.rb" | specbandit push --key KEY

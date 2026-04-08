@@ -2,6 +2,9 @@
 
 require 'spec_helper'
 require 'rspec/core'
+require 'json'
+require 'tmpdir'
+require 'fileutils'
 
 RSpec.describe Specbandit::Worker do
   let(:queue) { instance_double(Specbandit::RedisQueue) }
@@ -14,6 +17,17 @@ RSpec.describe Specbandit::Worker do
     allow(RSpec.world).to receive(:wants_to_quit=)
     allow(RSpec.world).to receive(:non_example_failure=)
     allow(RSpec.configuration).to receive(:output_stream=)
+  end
+
+  # Helper: extract the LAST --out path from RSpec::Core::Runner.run args.
+  # The worker always appends a temp JSON formatter at the end, so the last
+  # --out is the tempfile that accumulate_json_results reads from.
+  def json_out_from_args(args)
+    result = nil
+    args.each_with_index do |arg, i|
+      result = args[i + 1] if ['--out', '-o'].include?(arg) && args[i + 1]
+    end
+    result
   end
 
   describe '#run' do
@@ -89,7 +103,7 @@ RSpec.describe Specbandit::Worker do
         expect(RSpec::Core::Runner).to have_received(:run).twice
       end
 
-      it 'passes rspec_opts to the runner' do
+      it 'passes rspec_opts to the runner along with injected json formatter' do
         expect(queue).to receive(:steal).with(key, 2)
                                         .and_return(['spec/a_spec.rb'])
         expect(queue).to receive(:steal).with(key, 2)
@@ -105,7 +119,9 @@ RSpec.describe Specbandit::Worker do
         )
 
         expect(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
-          expect(args).to eq(['spec/a_spec.rb', '--format', 'documentation'])
+          # User opts come first, then the injected json formatter
+          expect(args).to start_with('spec/a_spec.rb', '--format', 'documentation')
+          expect(args).to include('--format', 'json', '--out')
           0
         end
 
@@ -263,6 +279,334 @@ RSpec.describe Specbandit::Worker do
 
         expect(exit_code).to eq(1)
         expect(output.string).to include('SOME FAILED')
+      end
+    end
+
+    context 'verbose mode' do
+      subject(:worker) do
+        described_class.new(
+          key: key,
+          batch_size: 2,
+          rspec_opts: [],
+          key_rerun: nil,
+          verbose: true,
+          queue: queue,
+          output: output
+        )
+      end
+
+      subject(:quiet_worker) do
+        described_class.new(
+          key: key,
+          batch_size: 2,
+          rspec_opts: [],
+          key_rerun: nil,
+          verbose: false,
+          queue: queue,
+          output: output
+        )
+      end
+
+      before do
+        allow(queue).to receive(:steal).with(key, 2)
+                                       .and_return(['spec/a_spec.rb'], [])
+      end
+
+      it 'shows file list per batch when verbose' do
+        worker.run
+        expect(output.string).to include('spec/a_spec.rb')
+      end
+
+      it 'hides file list per batch when quiet' do
+        quiet_worker.run
+        # Should still show the batch header but not individual files
+        expect(output.string).to include('Batch #1: running 1 files')
+        expect(output.string).not_to include('  spec/a_spec.rb')
+      end
+    end
+
+    context 'summary and reporting' do
+      let(:tmpdir) { Dir.mktmpdir('specbandit-test') }
+      let(:json_out_path) { File.join(tmpdir, 'results.json') }
+
+      after { FileUtils.rm_rf(tmpdir) }
+
+      def make_rspec_json(examples:, duration: 1.5, failure_count: 0, pending_count: 0)
+        {
+          'version' => '3.13.0',
+          'summary' => {
+            'duration' => duration,
+            'example_count' => examples.size,
+            'failure_count' => failure_count,
+            'pending_count' => pending_count,
+            'errors_outside_of_examples_count' => 0
+          },
+          'summary_line' => "#{examples.size} examples, #{failure_count} failures",
+          'examples' => examples
+        }
+      end
+
+      def passing_example(id:)
+        {
+          'id' => id,
+          'description' => "example #{id}",
+          'full_description' => "Something example #{id}",
+          'status' => 'passed',
+          'file_path' => "spec/#{id}_spec.rb",
+          'line_number' => 1,
+          'run_time' => 0.01
+        }
+      end
+
+      def failing_example(id:)
+        {
+          'id' => id,
+          'description' => "example #{id}",
+          'full_description' => "Something example #{id}",
+          'status' => 'failed',
+          'file_path' => "spec/#{id}_spec.rb",
+          'line_number' => 5,
+          'run_time' => 0.02,
+          'exception' => {
+            'class' => 'RSpec::Expectations::ExpectationNotMetError',
+            'message' => 'expected true to be false'
+          }
+        }
+      end
+
+      context 'unified console summary' do
+        subject(:worker) do
+          described_class.new(
+            key: key,
+            batch_size: 2,
+            rspec_opts: [],
+            key_rerun: nil,
+            queue: queue,
+            output: output
+          )
+        end
+
+        it 'prints summary with batch count and timing stats' do
+          batch_call = 0
+          allow(queue).to receive(:steal).with(key, 2)
+                                         .and_return(['spec/a_spec.rb'], ['spec/b_spec.rb'], [])
+          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
+            batch_call += 1
+            json_data = make_rspec_json(
+              examples: [passing_example(id: "ex#{batch_call}")],
+              duration: batch_call * 10.0
+            )
+            File.write(json_out_from_args(args), JSON.generate(json_data))
+            0
+          end
+
+          worker.run
+
+          expect(output.string).to include('[specbandit] Summary')
+          expect(output.string).to include('Batches:  2')
+          expect(output.string).to include('Examples: 2')
+          expect(output.string).to include('Failures: 0')
+          expect(output.string).to include('Batch timing: min')
+        end
+
+        it 'prints failed specs in the summary' do
+          allow(queue).to receive(:steal).with(key, 2)
+                                         .and_return(['spec/a_spec.rb'], [])
+          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
+            json_data = make_rspec_json(
+              examples: [failing_example(id: 'fail1')],
+              duration: 5.0,
+              failure_count: 1
+            )
+            File.write(json_out_from_args(args), JSON.generate(json_data))
+            1
+          end
+
+          worker.run
+
+          expect(output.string).to include('Failed specs (1)')
+          expect(output.string).to include('spec/fail1_spec.rb:5')
+          expect(output.string).to include('expected true to be false')
+        end
+
+        it 'always shows examples/failures/pending even without user --out' do
+          allow(queue).to receive(:steal).with(key, 2)
+                                         .and_return(['spec/a_spec.rb'], [])
+          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
+            json_data = make_rspec_json(
+              examples: [passing_example(id: 'a')],
+              duration: 1.0
+            )
+            File.write(json_out_from_args(args), JSON.generate(json_data))
+            0
+          end
+
+          worker.run
+
+          expect(output.string).to include('Examples: 1')
+          expect(output.string).to include('Failures: 0')
+          expect(output.string).to include('Pending:  0')
+        end
+      end
+
+      context 'JSON result accumulation' do
+        subject(:worker) do
+          described_class.new(
+            key: key,
+            batch_size: 2,
+            rspec_opts: ['--format', 'json', '--out', json_out_path],
+            key_rerun: nil,
+            queue: queue,
+            output: output
+          )
+        end
+
+        it 'merges all batch results into the user JSON output file' do
+          batch_call = 0
+          allow(queue).to receive(:steal).with(key, 2)
+                                         .and_return(['spec/a_spec.rb'], ['spec/b_spec.rb'], [])
+          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
+            batch_call += 1
+            examples = if batch_call == 1
+                         [passing_example(id: 'a')]
+                       else
+                         [failing_example(id: 'b')]
+                       end
+            failure_count = batch_call == 2 ? 1 : 0
+            json_data = make_rspec_json(examples: examples, duration: 2.0, failure_count: failure_count)
+            # Write to the injected tempfile path so accumulation works
+            File.write(json_out_from_args(args), JSON.generate(json_data))
+            batch_call == 2 ? 1 : 0
+          end
+
+          worker.run
+
+          # The merged result should be written to the user's --out path
+          merged = JSON.parse(File.read(json_out_path))
+          expect(merged['examples'].size).to eq(2)
+          expect(merged['summary']['example_count']).to eq(2)
+          expect(merged['summary']['failure_count']).to eq(1)
+          expect(merged['summary']['duration']).to eq(4.0)
+          expect(merged['specbandit_version']).to eq(Specbandit::VERSION)
+        end
+
+        it 'includes batch_timings in the merged JSON' do
+          allow(queue).to receive(:steal).with(key, 2)
+                                         .and_return(['spec/a_spec.rb'], [])
+          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
+            json_data = make_rspec_json(examples: [passing_example(id: 'a')], duration: 1.0)
+            File.write(json_out_from_args(args), JSON.generate(json_data))
+            0
+          end
+
+          worker.run
+
+          merged = JSON.parse(File.read(json_out_path))
+          expect(merged['batch_timings']).to be_a(Hash)
+          expect(merged['batch_timings']['count']).to eq(1)
+          expect(merged['batch_timings']['min']).to be_a(Numeric)
+          expect(merged['batch_timings']['avg']).to be_a(Numeric)
+          expect(merged['batch_timings']['max']).to be_a(Numeric)
+          expect(merged['batch_timings']['all']).to be_an(Array)
+        end
+
+        it 'does not write merged JSON when no user --out option is set' do
+          worker_no_json = described_class.new(
+            key: key,
+            batch_size: 2,
+            rspec_opts: [],
+            key_rerun: nil,
+            queue: queue,
+            output: output
+          )
+
+          allow(queue).to receive(:steal).with(key, 2)
+                                         .and_return(['spec/a_spec.rb'], [])
+
+          worker_no_json.run
+
+          # The user-specified json_out_path should not exist
+          expect(File.exist?(json_out_path)).to be false
+        end
+      end
+
+      context 'GitHub step summary' do
+        let(:step_summary_path) { File.join(tmpdir, 'step_summary.md') }
+
+        subject(:worker) do
+          described_class.new(
+            key: key,
+            batch_size: 2,
+            rspec_opts: [],
+            key_rerun: nil,
+            queue: queue,
+            output: output
+          )
+        end
+
+        around do |example|
+          original = ENV['GITHUB_STEP_SUMMARY']
+          ENV['GITHUB_STEP_SUMMARY'] = step_summary_path
+          example.run
+        ensure
+          if original
+            ENV['GITHUB_STEP_SUMMARY'] = original
+          else
+            ENV.delete('GITHUB_STEP_SUMMARY')
+          end
+        end
+
+        it 'writes markdown summary to GITHUB_STEP_SUMMARY' do
+          allow(queue).to receive(:steal).with(key, 2)
+                                         .and_return(['spec/a_spec.rb'], [])
+          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
+            json_data = make_rspec_json(examples: [passing_example(id: 'a')], duration: 1.0)
+            File.write(json_out_from_args(args), JSON.generate(json_data))
+            0
+          end
+
+          worker.run
+
+          md = File.read(step_summary_path)
+          expect(md).to include('Specbandit Results')
+          expect(md).to include('Batches')
+          expect(md).to include('Examples')
+          expect(md).to include('Batch time (min)')
+          expect(md).to include('Batch time (avg)')
+          expect(md).to include('Batch time (max)')
+        end
+
+        it 'includes failed specs in the step summary' do
+          allow(queue).to receive(:steal).with(key, 2)
+                                         .and_return(['spec/a_spec.rb'], [])
+          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
+            json_data = make_rspec_json(
+              examples: [failing_example(id: 'fail1')],
+              duration: 1.0,
+              failure_count: 1
+            )
+            File.write(json_out_from_args(args), JSON.generate(json_data))
+            1
+          end
+
+          worker.run
+
+          md = File.read(step_summary_path)
+          expect(md).to include('1 failed specs')
+          expect(md).to include('spec/fail1_spec.rb:5')
+          expect(md).to include('expected true to be false')
+        end
+
+        it 'does not write when GITHUB_STEP_SUMMARY is not set' do
+          ENV.delete('GITHUB_STEP_SUMMARY')
+
+          allow(queue).to receive(:steal).with(key, 2)
+                                         .and_return(['spec/a_spec.rb'], [])
+
+          worker.run
+
+          expect(File.exist?(step_summary_path)).to be false
+        end
       end
     end
   end

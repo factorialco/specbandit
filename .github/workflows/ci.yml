@@ -68,11 +68,11 @@ jobs:
           # Run 3 concurrent workers
           KEY="e2e-pass-${{ github.run_id }}"
 
-          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w1" --batch-size 1 > pass-worker-1.log 2>&1 &
+          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w1" --batch-size 1 --verbose > pass-worker-1.log 2>&1 &
           PID1=$!
-          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w2" --batch-size 1 > pass-worker-2.log 2>&1 &
+          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w2" --batch-size 1 --verbose > pass-worker-2.log 2>&1 &
           PID2=$!
-          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w3" --batch-size 1 > pass-worker-3.log 2>&1 &
+          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w3" --batch-size 1 --verbose > pass-worker-3.log 2>&1 &
           PID3=$!
 
           FAIL=0
@@ -154,14 +154,15 @@ jobs:
             --key "e2e-fail-${{ github.run_id }}" \
             --pattern 'tmp/e2e_fail_specs/*_spec.rb'
 
-          # Run 3 concurrent workers
+          # Run 3 concurrent workers (with JSON output to test accumulation)
           KEY="e2e-fail-${{ github.run_id }}"
+          mkdir -p tmp/e2e_fail_results
 
-          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w1" --batch-size 1 > fail-worker-1.log 2>&1 &
+          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w1" --batch-size 1 --verbose -- --format json --out tmp/e2e_fail_results/w1.json > fail-worker-1.log 2>&1 &
           PID1=$!
-          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w2" --batch-size 1 > fail-worker-2.log 2>&1 &
+          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w2" --batch-size 1 --verbose -- --format json --out tmp/e2e_fail_results/w2.json > fail-worker-2.log 2>&1 &
           PID2=$!
-          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w3" --batch-size 1 > fail-worker-3.log 2>&1 &
+          bundle exec specbandit work --key "$KEY" --key-rerun "${KEY}-w3" --batch-size 1 --verbose -- --format json --out tmp/e2e_fail_results/w3.json > fail-worker-3.log 2>&1 &
           PID3=$!
 
           W1_EXIT=0; wait $PID1 || W1_EXIT=$?
@@ -216,6 +217,45 @@ jobs:
               ERRORS=$((ERRORS + 1))
             fi
           done
+
+          # JSON accumulation: each worker's JSON must contain all examples from its batches
+          TOTAL_JSON_EXAMPLES=0
+          TOTAL_JSON_FAILURES=0
+          for i in 1 2 3; do
+            JSON_FILE="tmp/e2e_fail_results/w${i}.json"
+            if [ -f "$JSON_FILE" ]; then
+              W_EXAMPLES=$(ruby -rjson -e "puts JSON.parse(File.read('${JSON_FILE}'))['summary']['example_count']")
+              W_FAILURES=$(ruby -rjson -e "puts JSON.parse(File.read('${JSON_FILE}'))['summary']['failure_count']")
+              echo "Worker ${i} JSON: ${W_EXAMPLES} examples, ${W_FAILURES} failures"
+              TOTAL_JSON_EXAMPLES=$((TOTAL_JSON_EXAMPLES + W_EXAMPLES))
+              TOTAL_JSON_FAILURES=$((TOTAL_JSON_FAILURES + W_FAILURES))
+
+              # Verify batch_timings key exists
+              HAS_TIMINGS=$(ruby -rjson -e "puts JSON.parse(File.read('${JSON_FILE}')).key?('batch_timings')")
+              if [ "$HAS_TIMINGS" != "true" ]; then
+                echo "::error::Worker ${i} JSON missing batch_timings key"
+                ERRORS=$((ERRORS + 1))
+              fi
+            fi
+          done
+
+          # Total examples across all JSON files must equal 12
+          if [ "$TOTAL_JSON_EXAMPLES" -ne 12 ]; then
+            echo "::error::Expected 12 total examples in merged JSONs, found $TOTAL_JSON_EXAMPLES"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Total failures must equal 4
+          if [ "$TOTAL_JSON_FAILURES" -ne 4 ]; then
+            echo "::error::Expected 4 total failures in merged JSONs, found $TOTAL_JSON_FAILURES"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Summary must show example counts (not 0)
+          if grep -q "Examples: 0" fail-worker-*.log; then
+            echo "::error::At least one worker summary shows Examples: 0 (JSON accumulation failed)"
+            ERRORS=$((ERRORS + 1))
+          fi
 
           # Write summary
           {
