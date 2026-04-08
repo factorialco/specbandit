@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="specbandit.png" alt="specbandit logo" width="200">
+</p>
+
 # specbandit
 
 Distributed RSpec runner using Redis as a work queue. One process pushes spec file paths to a Redis list; multiple CI runners atomically steal batches and execute them in-process via `RSpec::Core::Runner`.
