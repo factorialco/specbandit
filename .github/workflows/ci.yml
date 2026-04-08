@@ -10,6 +10,14 @@ on:
         description: "Git ref to check out"
         required: false
         type: string
+      sha:
+        description: "Commit SHA to post status checks against"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  statuses: write
 
 jobs:
   unit-tests:
@@ -27,6 +35,18 @@ jobs:
 
       - name: Run unit tests
         run: bundle exec rspec --exclude-pattern 'spec/integration/**'
+
+      - name: Post commit status
+        if: always() && inputs.sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          STATE=${{ job.status == 'success' && 'success' || 'failure' }}
+          gh api repos/${{ github.repository }}/statuses/${{ inputs.sha }} \
+            -f state="$STATE" \
+            -f context="Unit tests" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -f description="Unit tests ${STATE}"
 
   e2e:
     name: "E2E: push/steal/run with 3 concurrent workers"
@@ -133,6 +153,18 @@ jobs:
 
           exit $FAIL
 
+      - name: Post commit status
+        if: always() && inputs.sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          STATE=${{ job.status == 'success' && 'success' || 'failure' }}
+          gh api repos/${{ github.repository }}/statuses/${{ inputs.sha }} \
+            -f state="$STATE" \
+            -f context="E2E: push/steal/run with 3 concurrent workers" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -f description="E2E ${STATE}"
+
   integration-tests:
     name: "Integration tests"
     runs-on: ubuntu-latest
@@ -158,3 +190,15 @@ jobs:
 
       - name: Run integration tests
         run: bundle exec rspec spec/integration/
+
+      - name: Post commit status
+        if: always() && inputs.sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          STATE=${{ job.status == 'success' && 'success' || 'failure' }}
+          gh api repos/${{ github.repository }}/statuses/${{ inputs.sha }} \
+            -f state="$STATE" \
+            -f context="Integration tests" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -f description="Integration tests ${STATE}"
