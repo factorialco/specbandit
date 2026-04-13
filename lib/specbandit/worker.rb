@@ -2,41 +2,51 @@
 
 require 'stringio'
 require 'json'
-require 'tempfile'
-require 'rspec/core'
 
 module Specbandit
   class Worker
-    attr_reader :queue, :key, :batch_size, :rspec_opts, :key_rerun, :key_rerun_ttl, :output, :verbose
+    attr_reader :queue, :key, :batch_size, :adapter, :key_rerun, :key_rerun_ttl, :output, :verbose
 
     def initialize(
       key: Specbandit.configuration.key,
       batch_size: Specbandit.configuration.batch_size,
-      rspec_opts: Specbandit.configuration.rspec_opts,
+      adapter: nil,
       key_rerun: Specbandit.configuration.key_rerun,
       key_rerun_ttl: Specbandit.configuration.key_rerun_ttl,
       verbose: Specbandit.configuration.verbose,
       queue: nil,
-      output: $stdout
+      output: $stdout,
+      # Legacy parameter for backward compatibility.
+      # When adapter is not provided, rspec_opts is used to build an RspecAdapter.
+      rspec_opts: nil
     )
       @key = key
       @batch_size = batch_size
-      @rspec_opts = Array(rspec_opts)
       @key_rerun = key_rerun
       @key_rerun_ttl = key_rerun_ttl
       @verbose = verbose
       @queue = queue || RedisQueue.new
       @output = output
-      @batch_durations = []
+      @batch_results = []
       @accumulated_examples = []
       @accumulated_summary = { duration: 0.0, example_count: 0, failure_count: 0, pending_count: 0,
                                errors_outside_of_examples_count: 0 }
+
+      # Support both new adapter-based and legacy rspec_opts-based construction.
+      # If no adapter is provided, fall back to RspecAdapter for backward compatibility.
+      @adapter = adapter || RspecAdapter.new(
+        rspec_opts: rspec_opts || Specbandit.configuration.rspec_opts,
+        verbose: verbose,
+        output: output
+      )
     end
 
     # Main entry point. Detects the operating mode and dispatches accordingly.
     #
     # Returns 0 if all batches passed (or nothing to do), 1 if any batch failed.
     def run
+      adapter.setup
+
       exit_code = if key_rerun
                     rerun_files = queue.read_all(key_rerun)
                     if rerun_files.any?
@@ -48,11 +58,13 @@ module Specbandit
                     run_steal(record: false)
                   end
 
-      print_summary if @batch_durations.any?
+      print_summary if @batch_results.any?
       merge_json_results
       write_github_step_summary if ENV['GITHUB_STEP_SUMMARY']
 
       exit_code
+    ensure
+      adapter.teardown
     end
 
     private
@@ -72,9 +84,11 @@ module Specbandit
         output.puts "[specbandit] Batch ##{batch_num}: running #{batch.size} files"
         batch.each { |f| output.puts "  #{f}" } if verbose
 
-        exit_code = run_rspec_batch(batch)
-        if exit_code != 0
-          output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{exit_code})"
+        result = adapter.run_batch(batch, batch_num)
+        process_batch_result(result)
+
+        if result.exit_code != 0
+          output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{result.exit_code})"
           failed = true
         else
           output.puts "[specbandit] Batch ##{batch_num} passed."
@@ -111,9 +125,11 @@ module Specbandit
         output.puts "[specbandit] Batch ##{batch_num}: running #{files.size} files"
         files.each { |f| output.puts "  #{f}" } if verbose
 
-        exit_code = run_rspec_batch(files)
-        if exit_code != 0
-          output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{exit_code})"
+        result = adapter.run_batch(files, batch_num)
+        process_batch_result(result)
+
+        if result.exit_code != 0
+          output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{result.exit_code})"
           failed = true
         else
           output.puts "[specbandit] Batch ##{batch_num} passed."
@@ -129,71 +145,42 @@ module Specbandit
       failed ? 1 : 0
     end
 
-    def run_rspec_batch(files)
-      reset_rspec_state
+    # Process a BatchResult: store it, and for RSpec batches,
+    # read the JSON output for rich reporting.
+    def process_batch_result(result)
+      @batch_results << result
 
-      # Always write JSON to a tempfile so we can accumulate structured results
-      # regardless of whether the user passed --format json --out.
-      batch_json = Tempfile.new(['specbandit-batch', '.json'])
-      args = files + rspec_opts + ['--format', 'json', '--out', batch_json.path]
+      # If the adapter returned an RspecBatchResult with a json_path,
+      # accumulate the structured results for rich reporting.
+      return unless result.is_a?(RspecBatchResult) && result.json_path
 
-      err = StringIO.new
-      out = StringIO.new
+      accumulate_json_results(result.json_path)
 
-      start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      exit_code = RSpec::Core::Runner.run(args, err, out)
-      duration = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
-      @batch_durations << duration
-
-      accumulate_json_results(batch_json.path)
-      exit_code
-    ensure
-      # Print RSpec output through our output stream
-      rspec_output = out&.string
-      output.print(rspec_output) if verbose && rspec_output && !rspec_output.empty?
-
-      rspec_err = err&.string
-      output.print(rspec_err) if verbose && rspec_err && !rspec_err.empty?
-
-      batch_json&.close
-      batch_json&.unlink
-    end
-
-    # Reset RSpec state between batches so each batch runs cleanly.
-    #
-    # RSpec.clear_examples resets example groups, the reporter, filters, and
-    # the start-time clock -- but it leaves three critical pieces of state
-    # that cause cascading failures when running multiple batches in the
-    # same process:
-    #
-    # 1. output_stream -- After batch #1, Runner#configure sets
-    #    output_stream to a StringIO. On batch #2+, the guard
-    #    `if output_stream == $stdout` is permanently false, so the new
-    #    `out` is never used. All RSpec output silently goes to the stale
-    #    batch-1 StringIO.
-    #
-    # 2. wants_to_quit -- If any batch triggers a load error or fail-fast,
-    #    this flag is set to true. On subsequent batches, Runner#setup
-    #    returns immediately and Runner#run does exit_early -- specs are
-    #    never loaded or run.
-    #
-    # 3. non_example_failure -- Once set, exit_code() unconditionally
-    #    returns the failure exit code, even if all examples passed.
-    #
-    def reset_rspec_state
-      RSpec.clear_examples
-      RSpec.world.wants_to_quit = false
-      RSpec.world.non_example_failure = false
-      RSpec.configuration.output_stream = $stdout
+      # Clean up the tempfile now that we've read it
+      File.delete(result.json_path) if File.exist?(result.json_path)
+    rescue StandardError
+      # Never fail because of tempfile cleanup
+      nil
     end
 
     # --- Reporting helpers ---
 
-    # Extract the --out file path from rspec_opts.
+    def batch_durations
+      @batch_results.map(&:duration)
+    end
+
+    def has_rspec_results?
+      @accumulated_examples.any? || @accumulated_summary[:example_count] > 0
+    end
+
+    # Extract the --out file path from rspec_opts (when using RspecAdapter).
     # RSpec accepts: --out FILE or -o FILE
     def json_output_path
-      rspec_opts.each_with_index do |opt, i|
-        return rspec_opts[i + 1] if ['--out', '-o'].include?(opt) && rspec_opts[i + 1]
+      return nil unless adapter.is_a?(RspecAdapter)
+
+      opts = adapter.rspec_opts
+      opts.each_with_index do |opt, i|
+        return opts[i + 1] if ['--out', '-o'].include?(opt) && opts[i + 1]
       end
       nil
     end
@@ -238,11 +225,11 @@ module Specbandit
         'summary_line' => summary_line,
         'examples' => @accumulated_examples,
         'batch_timings' => {
-          'count' => @batch_durations.size,
-          'min' => @batch_durations.min&.round(2),
-          'avg' => @batch_durations.empty? ? 0 : (@batch_durations.sum / @batch_durations.size).round(2),
-          'max' => @batch_durations.max&.round(2),
-          'all' => @batch_durations.map { |d| d.round(2) }
+          'count' => batch_durations.size,
+          'min' => batch_durations.min&.round(2),
+          'avg' => batch_durations.empty? ? 0 : (batch_durations.sum / batch_durations.size).round(2),
+          'max' => batch_durations.max&.round(2),
+          'all' => batch_durations.map { |d| d.round(2) }
         }
       }
 
@@ -255,33 +242,54 @@ module Specbandit
       output.puts '=' * 60
       output.puts '[specbandit] Summary'
       output.puts '=' * 60
-      output.puts "  Batches:  #{@batch_durations.size}"
-      output.puts "  Examples: #{@accumulated_summary[:example_count]}"
-      output.puts "  Failures: #{@accumulated_summary[:failure_count]}"
-      output.puts "  Pending:  #{@accumulated_summary[:pending_count]}"
+      output.puts "  Batches:  #{batch_durations.size}"
+
+      if has_rspec_results?
+        # Rich RSpec-specific summary
+        output.puts "  Examples: #{@accumulated_summary[:example_count]}"
+        output.puts "  Failures: #{@accumulated_summary[:failure_count]}"
+        output.puts "  Pending:  #{@accumulated_summary[:pending_count]}"
+      else
+        # Generic batch-level summary (CLI adapter or no JSON data)
+        total_files = @batch_results.sum { |r| r.files.size }
+        failed_batches = @batch_results.count { |r| r.exit_code != 0 }
+        output.puts "  Files:          #{total_files}"
+        output.puts "  Failed batches: #{failed_batches}"
+      end
 
       output.puts ''
       output.puts format(
         '  Batch timing: min %.1fs | avg %.1fs | max %.1fs',
-        @batch_durations.min || 0,
-        @batch_durations.empty? ? 0 : @batch_durations.sum / @batch_durations.size,
-        @batch_durations.max || 0
+        batch_durations.min || 0,
+        batch_durations.empty? ? 0 : batch_durations.sum / batch_durations.size,
+        batch_durations.max || 0
       )
 
-      failed_examples = @accumulated_examples.select { |e| e['status'] == 'failed' }
-      if failed_examples.any?
-        output.puts ''
-        output.puts "  Failed specs (#{failed_examples.size}):"
-        failed_examples.each do |ex|
-          location = ex.dig('file_path') || 'unknown'
-          line = ex.dig('line_number')
-          location = "#{location}:#{line}" if line
-          desc = ex.dig('full_description') || ex.dig('description') || ''
-          message = ex.dig('exception', 'message') || ''
-          # Truncate long messages
-          message = "#{message[0, 120]}..." if message.length > 120
-          output.puts "    #{location} - #{desc}"
-          output.puts "      #{message}" unless message.empty?
+      if has_rspec_results?
+        failed_examples = @accumulated_examples.select { |e| e['status'] == 'failed' }
+        if failed_examples.any?
+          output.puts ''
+          output.puts "  Failed specs (#{failed_examples.size}):"
+          failed_examples.each do |ex|
+            location = ex.dig('file_path') || 'unknown'
+            line = ex.dig('line_number')
+            location = "#{location}:#{line}" if line
+            desc = ex.dig('full_description') || ex.dig('description') || ''
+            message = ex.dig('exception', 'message') || ''
+            # Truncate long messages
+            message = "#{message[0, 120]}..." if message.length > 120
+            output.puts "    #{location} - #{desc}"
+            output.puts "      #{message}" unless message.empty?
+          end
+        end
+      else
+        failed_batch_results = @batch_results.select { |r| r.exit_code != 0 }
+        if failed_batch_results.any?
+          output.puts ''
+          output.puts "  Failed batches (#{failed_batch_results.size}):"
+          failed_batch_results.each do |r|
+            output.puts "    Batch ##{r.batch_num} (exit code #{r.exit_code}): #{r.files.join(', ')}"
+          end
         end
       end
 
@@ -302,44 +310,85 @@ module Specbandit
       return unless path
 
       md = StringIO.new
-      md.puts '### 🏴‍☠️ Specbandit Results'
-      md.puts ''
-      md.puts '| Metric | Value |'
-      md.puts '|--------|-------|'
-      md.puts "| Batches | #{@batch_durations.size} |"
-      md.puts "| Examples | #{@accumulated_summary[:example_count]} |"
-      md.puts "| Failures | #{@accumulated_summary[:failure_count]} |"
-      md.puts "| Pending | #{@accumulated_summary[:pending_count]} |"
 
-      md.puts format('| Batch time (min) | %.1fs |', @batch_durations.min || 0)
-      md.puts format('| Batch time (avg) | %.1fs |',
-                     @batch_durations.empty? ? 0 : @batch_durations.sum / @batch_durations.size)
-      md.puts format('| Batch time (max) | %.1fs |', @batch_durations.max || 0)
-      md.puts ''
-
-      failed_examples = @accumulated_examples.select { |e| e['status'] == 'failed' }
-      if failed_examples.any?
-        md.puts "<details><summary>❌ #{failed_examples.size} failed specs</summary>"
-        md.puts ''
-        md.puts '| Location | Description | Error |'
-        md.puts '|----------|-------------|-------|'
-        failed_examples.each do |ex|
-          location = ex['file_path'] || 'unknown'
-          line = ex['line_number']
-          location = "#{location}:#{line}" if line
-          desc = (ex['full_description'] || ex['description'] || '').gsub('|', '\\|')
-          message = (ex.dig('exception', 'message') || '').gsub('|', '\\|').gsub("\n", ' ')
-          message = "#{message[0, 100]}..." if message.length > 100
-          md.puts "| `#{location}` | #{desc} | #{message} |"
-        end
-        md.puts ''
-        md.puts '</details>'
+      if has_rspec_results?
+        write_rspec_github_summary(md)
+      else
+        write_generic_github_summary(md)
       end
 
       File.open(path, 'a') { |f| f.write(md.string) }
     rescue StandardError
       # Never fail the build because of summary writing
       nil
+    end
+
+    def write_rspec_github_summary(md)
+      md.puts '### Specbandit Results'
+      md.puts ''
+      md.puts '| Metric | Value |'
+      md.puts '|--------|-------|'
+      md.puts "| Batches | #{batch_durations.size} |"
+      md.puts "| Examples | #{@accumulated_summary[:example_count]} |"
+      md.puts "| Failures | #{@accumulated_summary[:failure_count]} |"
+      md.puts "| Pending | #{@accumulated_summary[:pending_count]} |"
+
+      md.puts format('| Batch time (min) | %.1fs |', batch_durations.min || 0)
+      md.puts format('| Batch time (avg) | %.1fs |',
+                     batch_durations.empty? ? 0 : batch_durations.sum / batch_durations.size)
+      md.puts format('| Batch time (max) | %.1fs |', batch_durations.max || 0)
+      md.puts ''
+
+      failed_examples = @accumulated_examples.select { |e| e['status'] == 'failed' }
+      return unless failed_examples.any?
+
+      md.puts "<details><summary>#{failed_examples.size} failed specs</summary>"
+      md.puts ''
+      md.puts '| Location | Description | Error |'
+      md.puts '|----------|-------------|-------|'
+      failed_examples.each do |ex|
+        location = ex['file_path'] || 'unknown'
+        line = ex['line_number']
+        location = "#{location}:#{line}" if line
+        desc = (ex['full_description'] || ex['description'] || '').gsub('|', '\\|')
+        message = (ex.dig('exception', 'message') || '').gsub('|', '\\|').gsub("\n", ' ')
+        message = "#{message[0, 100]}..." if message.length > 100
+        md.puts "| `#{location}` | #{desc} | #{message} |"
+      end
+      md.puts ''
+      md.puts '</details>'
+    end
+
+    def write_generic_github_summary(md)
+      total_files = @batch_results.sum { |r| r.files.size }
+      failed_batch_results = @batch_results.select { |r| r.exit_code != 0 }
+
+      md.puts '### Specbandit Results'
+      md.puts ''
+      md.puts '| Metric | Value |'
+      md.puts '|--------|-------|'
+      md.puts "| Batches | #{batch_durations.size} |"
+      md.puts "| Files | #{total_files} |"
+      md.puts "| Failed batches | #{failed_batch_results.size} |"
+
+      md.puts format('| Batch time (min) | %.1fs |', batch_durations.min || 0)
+      md.puts format('| Batch time (avg) | %.1fs |',
+                     batch_durations.empty? ? 0 : batch_durations.sum / batch_durations.size)
+      md.puts format('| Batch time (max) | %.1fs |', batch_durations.max || 0)
+      md.puts ''
+
+      return unless failed_batch_results.any?
+
+      md.puts "<details><summary>#{failed_batch_results.size} failed batches</summary>"
+      md.puts ''
+      md.puts '| Batch | Exit Code | Files |'
+      md.puts '|-------|-----------|-------|'
+      failed_batch_results.each do |r|
+        files_str = r.files.map { |f| "`#{f}`" }.join(', ')
+        md.puts "| ##{r.batch_num} | #{r.exit_code} | #{files_str} |"
+      end
+      md.puts ''
+      md.puts '</details>'
     end
   end
 end

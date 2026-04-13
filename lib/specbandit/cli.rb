@@ -85,10 +85,22 @@ module Specbandit
 
     def run_work
       parser = OptionParser.new do |opts|
-        opts.banner = 'Usage: specbandit work [options]'
+        opts.banner = 'Usage: specbandit work [options] [-- extra-opts...]'
 
         opts.on('--key KEY', 'Redis queue key (required, or set SPECBANDIT_KEY)') do |v|
           Specbandit.configuration.key = v
+        end
+
+        opts.on('--adapter TYPE', 'Adapter type: cli (default) or rspec') do |v|
+          Specbandit.configuration.adapter = v
+        end
+
+        opts.on('--command CMD', 'Command to run with file paths (required for cli adapter)') do |v|
+          Specbandit.configuration.command = v
+        end
+
+        opts.on('--command-opts OPTS', 'Extra options forwarded to the command (space-separated)') do |v|
+          Specbandit.configuration.command_opts = v.split
         end
 
         opts.on('--batch-size N', Integer, 'Number of files to steal per batch (default: 5)') do |v|
@@ -99,7 +111,7 @@ module Specbandit
           Specbandit.configuration.redis_url = v
         end
 
-        opts.on('--rspec-opts OPTS', 'Extra options to pass to RSpec (space-separated)') do |v|
+        opts.on('--rspec-opts OPTS', 'Extra options to pass to RSpec (for rspec adapter, space-separated)') do |v|
           Specbandit.configuration.rspec_opts = v.split
         end
 
@@ -111,7 +123,7 @@ module Specbandit
           Specbandit.configuration.key_rerun_ttl = v
         end
 
-        opts.on('--verbose', 'Show per-batch file list and full RSpec output (default: quiet)') do
+        opts.on('--verbose', 'Show per-batch file list and full command output (default: quiet)') do
           Specbandit.configuration.verbose = true
         end
 
@@ -122,46 +134,91 @@ module Specbandit
       end
 
       parser.parse!(argv)
-      Specbandit.configuration.validate!
 
-      # Remaining args after `--` are treated as extra rspec options.
-      # This allows: specbandit work --key KEY -- --format json --out results.json
-      Specbandit.configuration.rspec_opts = argv if argv.any?
+      # Remaining args after `--` are forwarded to the adapter.
+      # They are merged with --command-opts or --rspec-opts depending on the adapter.
+      extra_opts = argv.any? ? argv : []
 
-      worker = Worker.new
+      config = Specbandit.configuration
+      adapter = build_adapter(config, extra_opts)
+
+      config.validate!
+
+      worker = Worker.new(adapter: adapter)
       worker.run
+    end
+
+    # Build the appropriate adapter based on configuration.
+    #
+    # --adapter rspec  -> RspecAdapter (runs RSpec programmatically in-process)
+    # --adapter cli    -> CliAdapter (default, spawns shell commands)
+    # (no --adapter)   -> CliAdapter (backward compatible with specbanditjs)
+    def build_adapter(config, extra_opts)
+      adapter_type = config.adapter.downcase
+
+      case adapter_type
+      when 'rspec'
+        rspec_opts = config.rspec_opts + extra_opts
+        RspecAdapter.new(
+          rspec_opts: rspec_opts,
+          verbose: config.verbose,
+          output: $stdout
+        )
+      when 'cli'
+        unless config.command
+          raise Error, 'command is required for CLI adapter (set via --command or SPECBANDIT_COMMAND)'
+        end
+
+        command_opts = config.command_opts + extra_opts
+        CliAdapter.new(
+          command: config.command,
+          command_opts: command_opts,
+          verbose: config.verbose,
+          output: $stdout
+        )
+      else
+        raise Error, "Unknown adapter: #{adapter_type}. Supported: cli, rspec"
+      end
     end
 
     def print_usage
       puts <<~USAGE
-        specbandit v#{VERSION} - Distributed RSpec runner using Redis
+        specbandit v#{VERSION} - Distributed test runner using Redis
 
         Usage:
-          specbandit push [options] [files...]    Enqueue spec files into Redis
-          specbandit work [options]               Steal and run spec file batches
+          specbandit push [options] [files...]           Enqueue test files into Redis
+          specbandit work [options] [-- extra-opts...]   Steal and run test file batches
 
         Push options:
-          --key KEY            Redis queue key (required, or set SPECBANDIT_KEY)
-          --pattern PATTERN    Glob pattern for file discovery (e.g. 'spec/**/*_spec.rb')
-          --redis-url URL      Redis URL (default: redis://localhost:6379)
-          --key-ttl SECONDS    TTL for the Redis key (default: 21600 / 6 hours)
+          --key KEY              Redis queue key (required, or set SPECBANDIT_KEY)
+          --pattern PATTERN      Glob pattern for file discovery (e.g. 'spec/**/*_spec.rb')
+          --redis-url URL        Redis URL (default: redis://localhost:6379)
+          --key-ttl SECONDS      TTL for the Redis key (default: 21600 / 6 hours)
 
         Work options:
-          --key KEY            Redis queue key (required, or set SPECBANDIT_KEY)
-          --batch-size N       Files per batch (default: 5, or set SPECBANDIT_BATCH_SIZE)
-          --redis-url URL      Redis URL (default: redis://localhost:6379)
-          --rspec-opts OPTS    Extra options forwarded to RSpec
-          --key-rerun KEY      Per-runner rerun key for re-run support
-          --key-rerun-ttl N    TTL for rerun key (default: 604800 / 1 week)
-          --verbose            Show per-batch file list and full RSpec output
-          -- OPTS...           Pass remaining args as RSpec options (alternative to --rspec-opts)
+          --key KEY              Redis queue key (required, or set SPECBANDIT_KEY)
+          --adapter TYPE         Adapter type: 'cli' (default) or 'rspec'
+          --command CMD          Command to run with file paths (required for cli adapter)
+          --command-opts OPTS    Extra options forwarded to the command (space-separated)
+          --rspec-opts OPTS      Extra options forwarded to RSpec (for rspec adapter)
+          --batch-size N         Files per batch (default: 5, or set SPECBANDIT_BATCH_SIZE)
+          --redis-url URL        Redis URL (default: redis://localhost:6379)
+          --key-rerun KEY        Per-runner rerun key for re-run support
+          --key-rerun-ttl N      TTL for rerun key (default: 604800 / 1 week)
+          --verbose              Show per-batch file list and full command output
+
+          Arguments after -- are forwarded to the adapter (rspec opts, command opts, etc.).
+          They are merged with --command-opts or --rspec-opts if both are provided.
 
         Environment variables:
           SPECBANDIT_KEY              Queue key
           SPECBANDIT_REDIS_URL        Redis URL
+          SPECBANDIT_ADAPTER          Adapter type (cli/rspec)
+          SPECBANDIT_COMMAND          Command to run (cli adapter)
+          SPECBANDIT_COMMAND_OPTS     Command options (space-separated)
           SPECBANDIT_BATCH_SIZE       Batch size
           SPECBANDIT_KEY_TTL          Key TTL in seconds (default: 21600)
-          SPECBANDIT_RSPEC_OPTS       RSpec options
+          SPECBANDIT_RSPEC_OPTS       RSpec options (rspec adapter)
           SPECBANDIT_KEY_RERUN        Per-runner rerun key
           SPECBANDIT_KEY_RERUN_TTL    Rerun key TTL in seconds (default: 604800)
           SPECBANDIT_VERBOSE          Enable verbose output (1/true/yes)
@@ -170,6 +227,12 @@ module Specbandit
           1. stdin (piped)     echo "spec/a_spec.rb" | specbandit push --key KEY
           2. --pattern         specbandit push --key KEY --pattern 'spec/**/*_spec.rb'
           3. direct args       specbandit push --key KEY spec/a_spec.rb spec/b_spec.rb
+
+        Adapters:
+          cli   (default) Spawns a shell command for each batch. Works with any test runner.
+                Requires --command.
+          rspec Runs RSpec programmatically in-process. No process startup overhead per batch.
+                Requires rspec-core ~> 3.0.
       USAGE
     end
   end

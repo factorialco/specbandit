@@ -2,6 +2,9 @@
 
 require 'specbandit/version'
 require 'specbandit/configuration'
+require 'specbandit/adapter'
+require 'specbandit/rspec_adapter'
+require 'specbandit/cli_adapter'
 require 'specbandit/redis_queue'
 require 'specbandit/publisher'
 require 'specbandit/worker'

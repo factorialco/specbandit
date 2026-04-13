@@ -20,7 +20,7 @@ RSpec.describe Specbandit::Worker do
   end
 
   # Helper: extract the LAST --out path from RSpec::Core::Runner.run args.
-  # The worker always appends a temp JSON formatter at the end, so the last
+  # The adapter always appends a temp JSON formatter at the end, so the last
   # --out is the tempfile that accumulate_json_results reads from.
   def json_out_from_args(args)
     result = nil
@@ -31,6 +31,75 @@ RSpec.describe Specbandit::Worker do
   end
 
   describe '#run' do
+    context 'with adapter (generic)' do
+      let(:mock_adapter) do
+        adapter = double('Adapter')
+        allow(adapter).to receive(:setup)
+        allow(adapter).to receive(:teardown)
+        allow(adapter).to receive(:run_batch) do |files, batch_num|
+          Specbandit::BatchResult.new(
+            batch_num: batch_num,
+            files: files,
+            exit_code: 0,
+            duration: 1.0
+          )
+        end
+        adapter
+      end
+
+      subject(:worker) do
+        described_class.new(
+          key: key,
+          batch_size: 2,
+          adapter: mock_adapter,
+          key_rerun: nil,
+          queue: queue,
+          output: output
+        )
+      end
+
+      it 'calls adapter.setup before batches and adapter.teardown after' do
+        expect(queue).to receive(:steal).with(key, 2).and_return([])
+        expect(mock_adapter).to receive(:setup).ordered
+        expect(mock_adapter).to receive(:teardown).ordered
+
+        worker.run
+      end
+
+      it 'calls adapter.teardown even if an error occurs' do
+        expect(queue).to receive(:steal).with(key, 2).and_raise(StandardError, 'boom')
+        expect(mock_adapter).to receive(:setup)
+        expect(mock_adapter).to receive(:teardown)
+
+        expect { worker.run }.to raise_error(StandardError, 'boom')
+      end
+
+      it 'delegates batch execution to the adapter' do
+        expect(queue).to receive(:steal).with(key, 2)
+                                        .and_return(['spec/a_spec.rb', 'spec/b_spec.rb'])
+        expect(queue).to receive(:steal).with(key, 2).and_return([])
+
+        expect(mock_adapter).to receive(:run_batch)
+          .with(['spec/a_spec.rb', 'spec/b_spec.rb'], 1)
+          .and_return(Specbandit::BatchResult.new(batch_num: 1, files: ['spec/a_spec.rb', 'spec/b_spec.rb'],
+                                                  exit_code: 0, duration: 1.0))
+
+        worker.run
+      end
+
+      it 'shows generic summary (Files/Failed batches) for non-RSpec adapter' do
+        expect(queue).to receive(:steal).with(key, 2)
+                                        .and_return(['spec/a_spec.rb'])
+        expect(queue).to receive(:steal).with(key, 2).and_return([])
+
+        worker.run
+
+        expect(output.string).to include('Files:')
+        expect(output.string).to include('Failed batches:')
+        expect(output.string).not_to include('Examples:')
+      end
+    end
+
     context 'steal mode (no key_rerun)' do
       subject(:worker) do
         described_class.new(
@@ -103,7 +172,7 @@ RSpec.describe Specbandit::Worker do
         expect(RSpec::Core::Runner).to have_received(:run).twice
       end
 
-      it 'passes rspec_opts to the runner along with injected json formatter' do
+      it 'passes rspec_opts to the adapter along with injected json formatter' do
         expect(queue).to receive(:steal).with(key, 2)
                                         .and_return(['spec/a_spec.rb'])
         expect(queue).to receive(:steal).with(key, 2)
@@ -132,45 +201,6 @@ RSpec.describe Specbandit::Worker do
         expect(queue).to receive(:steal).with(key, 2).and_return(['spec/a_spec.rb'])
         expect(queue).to receive(:steal).with(key, 2).and_return([])
         expect(queue).not_to receive(:push)
-
-        worker.run
-      end
-
-      it 'resets wants_to_quit before each batch' do
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return(['spec/a_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return(['spec/b_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return([])
-
-        expect(RSpec.world).to receive(:wants_to_quit=).with(false).twice
-
-        worker.run
-      end
-
-      it 'resets non_example_failure before each batch' do
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return(['spec/a_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return(['spec/b_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return([])
-
-        expect(RSpec.world).to receive(:non_example_failure=).with(false).twice
-
-        worker.run
-      end
-
-      it 'resets output_stream to $stdout before each batch' do
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return(['spec/a_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return(['spec/b_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return([])
-
-        expect(RSpec.configuration).to receive(:output_stream=).with($stdout).twice
 
         worker.run
       end

@@ -6,10 +6,11 @@ Gem::Specification.new do |spec|
   spec.name = 'specbandit'
   spec.version = Specbandit::VERSION
   spec.authors = ['Ferran Basora']
-  spec.summary = 'Distributed RSpec runner using Redis as a work queue'
-  spec.description = 'A work-stealing distributed RSpec runner. Push spec file paths ' \
+  spec.summary = 'Distributed test runner using Redis as a work queue'
+  spec.description = 'A work-stealing distributed test runner. Push test file paths ' \
                      'to a Redis list, then multiple CI runners atomically steal batches ' \
-                     'and execute them in-process via RSpec::Core::Runner.'
+                     'and execute them via a pluggable adapter (CLI for any test runner, ' \
+                     'or in-process RSpec for maximum performance).'
   spec.homepage = 'https://github.com/factorialco/specbandit'
   spec.license = 'MIT'
   spec.required_ruby_version = '>= 3.0'
