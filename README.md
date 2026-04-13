@@ -4,13 +4,13 @@
 
 # specbandit
 
-Distributed RSpec runner using Redis as a work queue. One process pushes spec file paths to a Redis list; multiple CI runners atomically steal batches and execute them in-process via `RSpec::Core::Runner`.
+Distributed test runner using Redis as a work queue. One process pushes test file paths to a Redis list; multiple CI runners atomically steal batches and execute them via a pluggable adapter.
 
 ```
 CI Job 1 (push):    RPUSH key f1 f2 f3 ... fN  -->  [Redis List]
-CI Job 2 (worker):  LPOP key 5  <--  [Redis List]  -->  RSpec
-CI Job 3 (worker):  LPOP key 5  <--  [Redis List]  -->  RSpec
-CI Job N (worker):  LPOP key 5  <--  [Redis List]  -->  RSpec
+CI Job 2 (worker):  LPOP key 5  <--  [Redis List]  -->  adapter (cli/rspec)
+CI Job 3 (worker):  LPOP key 5  <--  [Redis List]  -->  adapter (cli/rspec)
+CI Job N (worker):  LPOP key 5  <--  [Redis List]  -->  adapter (cli/rspec)
 ```
 
 `LPOP` with a count argument (Redis 6.2+) is atomic -- multiple workers calling it concurrently will never receive the same file.
@@ -31,11 +31,70 @@ gem install specbandit
 
 **Requirements**: Ruby >= 3.0, Redis >= 6.2
 
+## Adapters
+
+specbandit v0.7.0 introduces a pluggable adapter architecture. Two adapters ship out of the box:
+
+| Adapter | Default? | How it runs | Best for |
+|---------|----------|-------------|----------|
+| `cli` | Yes | Spawns a shell command per batch | Any test runner (Jest, pytest, Go test, etc.) |
+| `rspec` | No | Runs `RSpec::Core::Runner` in-process | RSpec (fastest, richest reporting) |
+
+### CLI adapter (default)
+
+The CLI adapter spawns a shell command for each batch, appending file paths as arguments. It works with any test runner.
+
+```bash
+# Run RSpec via CLI adapter
+specbandit work --key KEY --command "bundle exec rspec"
+
+# Run with extra options
+specbandit work --key KEY --command "bundle exec rspec" --command-opts "--format documentation"
+
+# Run Jest
+specbandit work --key KEY --command "npx jest"
+
+# Forward args after -- (merged with --command-opts)
+specbandit work --key KEY --command "bundle exec rspec" -- --format documentation
+```
+
+### RSpec adapter
+
+The RSpec adapter runs `RSpec::Core::Runner.run` in-process with `RSpec.clear_examples` between batches. No subprocess forking overhead. Provides rich reporting with per-example details, failure messages, and JSON accumulation.
+
+```bash
+specbandit work --key KEY --adapter rspec
+
+# With RSpec options
+specbandit work --key KEY --adapter rspec --rspec-opts "--format documentation"
+
+# JSON output for CI artifact collection
+specbandit work --key KEY --adapter rspec -- --format json --out results.json
+```
+
+### Migration from v0.6.x
+
+In v0.6.x, RSpec was the only execution method and was always used implicitly. In v0.7.0, the default adapter changed to `cli`. To keep the previous behavior, add `--adapter rspec`:
+
+```bash
+# v0.6.x
+specbandit work --key KEY
+
+# v0.7.0 equivalent
+specbandit work --key KEY --adapter rspec
+```
+
+Or set the environment variable:
+
+```bash
+export SPECBANDIT_ADAPTER=rspec
+```
+
 ## Usage
 
-### 1. Push spec files to Redis
+### 1. Push test files to Redis
 
-A single CI job enqueues all spec file paths before workers start.
+A single CI job enqueues all test file paths before workers start.
 
 ```bash
 # Via glob pattern (resolved in Ruby, avoids shell ARG_MAX limits)
@@ -55,12 +114,16 @@ File input priority: **stdin > --pattern > direct args**.
 Each CI runner steals batches and runs them. Start as many runners as you want -- they'll divide the work automatically.
 
 ```bash
-specbandit work --key pr-123-run-456 --batch-size 10
+# Using CLI adapter (default) -- works with any test runner
+specbandit work --key pr-123-run-456 --command "bundle exec rspec" --batch-size 10
+
+# Using RSpec adapter -- in-process, fastest for RSpec
+specbandit work --key pr-123-run-456 --adapter rspec --batch-size 10
 ```
 
 Each worker loops:
 1. `LPOP` N file paths from Redis (atomic)
-2. Run them in-process via `RSpec::Core::Runner`
+2. Execute them via the configured adapter
 3. Repeat until the queue is empty
 4. Exit 0 if all batches passed, 1 if any failed
 
@@ -75,13 +138,20 @@ specbandit push [options] [files...]
   --redis-url URL        Redis URL (default: redis://localhost:6379)
   --key-ttl SECONDS      TTL for the Redis key (default: 21600 / 6 hours)
 
-specbandit work [options]
+specbandit work [options] [-- extra-opts...]
   --key KEY              Redis queue key (required)
+  --adapter TYPE         Adapter type: 'cli' (default) or 'rspec'
+  --command CMD          Command to run (required for cli adapter)
+  --command-opts OPTS    Extra options forwarded to the command (space-separated)
+  --rspec-opts OPTS      Extra options forwarded to RSpec (for rspec adapter)
   --batch-size N         Files per batch (default: 5)
   --redis-url URL        Redis URL (default: redis://localhost:6379)
-  --rspec-opts OPTS      Extra options forwarded to RSpec
   --key-rerun KEY        Per-runner rerun key for re-run support (see below)
   --key-rerun-ttl SECS   TTL for rerun key (default: 604800 / 1 week)
+  --verbose              Show per-batch file list and full command output
+
+Arguments after -- are forwarded to the adapter. They are merged with
+--command-opts (cli adapter) or --rspec-opts (rspec adapter).
 ```
 
 ### Environment variables
@@ -92,11 +162,15 @@ All CLI options can be set via environment variables:
 |---|---|---|
 | `SPECBANDIT_KEY` | Redis queue key | _(required)_ |
 | `SPECBANDIT_REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
+| `SPECBANDIT_ADAPTER` | Adapter type (`cli` or `rspec`) | `cli` |
+| `SPECBANDIT_COMMAND` | Command to run (cli adapter) | _(none)_ |
+| `SPECBANDIT_COMMAND_OPTS` | Space-separated command options | _(none)_ |
 | `SPECBANDIT_BATCH_SIZE` | Files per steal | `5` |
 | `SPECBANDIT_KEY_TTL` | Key expiry in seconds | `21600` (6 hours) |
-| `SPECBANDIT_RSPEC_OPTS` | Space-separated RSpec options | _(none)_ |
+| `SPECBANDIT_RSPEC_OPTS` | Space-separated RSpec options (rspec adapter) | _(none)_ |
 | `SPECBANDIT_KEY_RERUN` | Per-runner rerun key | _(none)_ |
 | `SPECBANDIT_KEY_RERUN_TTL` | Rerun key expiry in seconds | `604800` (1 week) |
+| `SPECBANDIT_VERBOSE` | Enable verbose output (`1`/`true`/`yes`) | _(false)_ |
 
 CLI flags take precedence over environment variables.
 
@@ -112,19 +186,35 @@ Specbandit.configure do |c|
   c.key_ttl        = 7200 # 2 hours (default: 21600 / 6 hours)
   c.key_rerun      = "pr-123-run-456-runner-3"
   c.key_rerun_ttl  = 604_800 # 1 week (default)
-  c.rspec_opts     = ["--format", "documentation"]
 end
 
 # Push
 publisher = Specbandit::Publisher.new
 publisher.publish(pattern: "spec/**/*_spec.rb")
 
-# Work (will auto-detect steal/record/replay mode based on key_rerun state)
-worker = Specbandit::Worker.new
+# Work with CLI adapter (default)
+adapter = Specbandit::CliAdapter.new(
+  command: "bundle exec rspec",
+  command_opts: ["--format", "documentation"]
+)
+worker = Specbandit::Worker.new(adapter: adapter)
+exit_code = worker.run
+
+# Work with RSpec adapter (in-process)
+adapter = Specbandit::RspecAdapter.new(
+  rspec_opts: ["--format", "documentation"]
+)
+worker = Specbandit::Worker.new(adapter: adapter)
+exit_code = worker.run
+
+# Legacy: passing rspec_opts directly still works (auto-creates RspecAdapter)
+worker = Specbandit::Worker.new(rspec_opts: ["--format", "documentation"])
 exit_code = worker.run
 ```
 
 ## Example: GitHub Actions (basic)
+
+### Using RSpec adapter (in-process)
 
 ```yaml
 jobs:
@@ -152,6 +242,39 @@ jobs:
           specbandit work \
             --key "pr-${{ github.event.number }}-${{ github.run_id }}" \
             --redis-url "${{ secrets.REDIS_URL }}" \
+            --adapter rspec \
+            --batch-size 10
+```
+
+### Using CLI adapter (any test runner)
+
+```yaml
+jobs:
+  push-specs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bundle install
+      - run: |
+          specbandit push \
+            --key "pr-${{ github.event.number }}-${{ github.run_id }}" \
+            --redis-url "${{ secrets.REDIS_URL }}" \
+            --pattern 'spec/**/*_spec.rb'
+
+  run-specs:
+    runs-on: ubuntu-latest
+    needs: push-specs
+    strategy:
+      matrix:
+        runner: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - run: bundle install
+      - run: |
+          specbandit work \
+            --key "pr-${{ github.event.number }}-${{ github.run_id }}" \
+            --redis-url "${{ secrets.REDIS_URL }}" \
+            --command "bundle exec rspec" \
             --batch-size 10
 ```
 
@@ -250,6 +373,7 @@ jobs:
             --key "pr-${{ github.event.number }}-${{ github.run_id }}" \
             --key-rerun "pr-${{ github.event.number }}-${{ github.run_id }}-runner-${{ matrix.runner }}" \
             --redis-url "${{ secrets.REDIS_URL }}" \
+            --adapter rspec \
             --batch-size 10
 ```
 
@@ -297,7 +421,9 @@ specbandit work \
 - **Steal** uses `LPOP key count` (Redis 6.2+), which atomically pops up to N elements. No Lua scripts, no locks, no race conditions.
 - **Record** (when `--key-rerun` is set): after each steal, the batch is also `RPUSH`ed to the per-runner rerun key with its own TTL (default: 1 week).
 - **Replay** (when `--key-rerun` has data): reads all files from the rerun key via `LRANGE` (non-destructive), splits into batches, and runs them locally. The shared queue is never touched.
-- **Run** uses `RSpec::Core::Runner.run` in-process with `RSpec.clear_examples` between batches to reset example state while preserving configuration. No subprocess forking overhead.
+- **Run** delegates to the configured adapter:
+  - **CLI adapter**: spawns a shell command per batch via `Open3`, appending file paths as arguments. Works with any test runner.
+  - **RSpec adapter**: uses `RSpec::Core::Runner.run` in-process with `RSpec.clear_examples` between batches to reset example state while preserving configuration. No subprocess forking overhead.
 - **Exit code** is 0 if every batch passed (or the queue was already empty), 1 if any batch had failures.
 
 ## Development

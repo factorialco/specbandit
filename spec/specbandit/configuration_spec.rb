@@ -33,6 +33,18 @@ RSpec.describe Specbandit::Configuration do
     it 'uses default key_rerun_ttl of 1 week' do
       expect(config.key_rerun_ttl).to eq(604_800)
     end
+
+    it 'uses cli as default adapter' do
+      expect(config.adapter).to eq('cli')
+    end
+
+    it 'has nil command by default' do
+      expect(config.command).to be_nil
+    end
+
+    it 'has empty command_opts by default' do
+      expect(config.command_opts).to eq([])
+    end
   end
 
   describe 'environment variable overrides' do
@@ -44,7 +56,10 @@ RSpec.describe Specbandit::Configuration do
         'SPECBANDIT_RSPEC_OPTS',
         'SPECBANDIT_KEY_TTL',
         'SPECBANDIT_KEY_RERUN',
-        'SPECBANDIT_KEY_RERUN_TTL'
+        'SPECBANDIT_KEY_RERUN_TTL',
+        'SPECBANDIT_ADAPTER',
+        'SPECBANDIT_COMMAND',
+        'SPECBANDIT_COMMAND_OPTS'
       )
       example.run
     ensure
@@ -55,6 +70,9 @@ RSpec.describe Specbandit::Configuration do
       ENV.delete('SPECBANDIT_KEY_TTL')
       ENV.delete('SPECBANDIT_KEY_RERUN')
       ENV.delete('SPECBANDIT_KEY_RERUN_TTL')
+      ENV.delete('SPECBANDIT_ADAPTER')
+      ENV.delete('SPECBANDIT_COMMAND')
+      ENV.delete('SPECBANDIT_COMMAND_OPTS')
       original_env.each { |k, v| ENV[k] = v }
     end
 
@@ -98,6 +116,24 @@ RSpec.describe Specbandit::Configuration do
       ENV['SPECBANDIT_KEY_RERUN_TTL'] = '86400'
       config = described_class.new
       expect(config.key_rerun_ttl).to eq(86_400)
+    end
+
+    it 'reads adapter from SPECBANDIT_ADAPTER' do
+      ENV['SPECBANDIT_ADAPTER'] = 'rspec'
+      config = described_class.new
+      expect(config.adapter).to eq('rspec')
+    end
+
+    it 'reads command from SPECBANDIT_COMMAND' do
+      ENV['SPECBANDIT_COMMAND'] = 'bundle exec rspec'
+      config = described_class.new
+      expect(config.command).to eq('bundle exec rspec')
+    end
+
+    it 'parses command_opts from SPECBANDIT_COMMAND_OPTS' do
+      ENV['SPECBANDIT_COMMAND_OPTS'] = '--format documentation --color'
+      config = described_class.new
+      expect(config.command_opts).to eq(['--format', 'documentation', '--color'])
     end
   end
 

@@ -93,11 +93,16 @@ RSpec.describe 'Full cycle integration', :integration do
     count = publisher.publish(files: spec_files)
     expect(count).to eq(3)
 
-    # Work
+    # Work — using explicit RspecAdapter
+    adapter = Specbandit::RspecAdapter.new(
+      rspec_opts: ['--format', 'progress', '--no-color'],
+      verbose: false,
+      output: output
+    )
     worker = Specbandit::Worker.new(
       key: key,
       batch_size: 2,
-      rspec_opts: ['--format', 'progress', '--no-color'],
+      adapter: adapter,
       queue: Specbandit::RedisQueue.new(redis_url: redis_url),
       output: output
     )
