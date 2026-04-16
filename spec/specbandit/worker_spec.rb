@@ -312,6 +312,82 @@ RSpec.describe Specbandit::Worker do
       end
     end
 
+    context 'rerun flag with empty rerun key (stale rerun)' do
+      let(:key_rerun) { 'pr-123-run-456-runner-3' }
+
+      subject(:worker) do
+        described_class.new(
+          key: key,
+          batch_size: 2,
+          rspec_opts: [],
+          key_rerun: key_rerun,
+          key_rerun_ttl: 604_800,
+          rerun: true,
+          queue: queue,
+          output: output
+        )
+      end
+
+      before do
+        allow(queue).to receive(:read_all).with(key_rerun).and_return([])
+      end
+
+      it 'fails hard with exit code 1' do
+        exit_code = worker.run
+
+        expect(exit_code).to eq(1)
+      end
+
+      it 'prints a clear error message' do
+        worker.run
+
+        expect(output.string).to include('ERROR')
+        expect(output.string).to include("rerun key '#{key_rerun}' is empty")
+        expect(output.string).to include('Cannot replay')
+      end
+
+      it 'does not steal from the shared queue' do
+        expect(queue).not_to receive(:steal)
+
+        worker.run
+      end
+
+      it 'does not run any specs' do
+        worker.run
+
+        expect(RSpec::Core::Runner).not_to have_received(:run)
+      end
+    end
+
+    context 'rerun flag with populated rerun key (valid rerun)' do
+      let(:key_rerun) { 'pr-123-run-456-runner-3' }
+      let(:recorded_files) { ['spec/x_spec.rb', 'spec/y_spec.rb'] }
+
+      subject(:worker) do
+        described_class.new(
+          key: key,
+          batch_size: 2,
+          rspec_opts: [],
+          key_rerun: key_rerun,
+          key_rerun_ttl: 604_800,
+          rerun: true,
+          queue: queue,
+          output: output
+        )
+      end
+
+      before do
+        allow(queue).to receive(:read_all).with(key_rerun).and_return(recorded_files)
+      end
+
+      it 'enters replay mode normally' do
+        exit_code = worker.run
+
+        expect(exit_code).to eq(0)
+        expect(output.string).to include('Replay mode: found 2 files')
+      end
+    end
+
     context 'verbose mode' do
       subject(:worker) do
         described_class.new(

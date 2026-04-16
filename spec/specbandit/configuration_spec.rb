@@ -34,6 +34,10 @@ RSpec.describe Specbandit::Configuration do
       expect(config.key_rerun_ttl).to eq(604_800)
     end
 
+    it 'has false rerun by default' do
+      expect(config.rerun).to be false
+    end
+
     it 'uses cli as default adapter' do
       expect(config.adapter).to eq('cli')
     end
@@ -57,6 +61,7 @@ RSpec.describe Specbandit::Configuration do
         'SPECBANDIT_KEY_TTL',
         'SPECBANDIT_KEY_RERUN',
         'SPECBANDIT_KEY_RERUN_TTL',
+        'SPECBANDIT_RERUN',
         'SPECBANDIT_ADAPTER',
         'SPECBANDIT_COMMAND',
         'SPECBANDIT_COMMAND_OPTS'
@@ -70,6 +75,7 @@ RSpec.describe Specbandit::Configuration do
       ENV.delete('SPECBANDIT_KEY_TTL')
       ENV.delete('SPECBANDIT_KEY_RERUN')
       ENV.delete('SPECBANDIT_KEY_RERUN_TTL')
+      ENV.delete('SPECBANDIT_RERUN')
       ENV.delete('SPECBANDIT_ADAPTER')
       ENV.delete('SPECBANDIT_COMMAND')
       ENV.delete('SPECBANDIT_COMMAND_OPTS')
@@ -116,6 +122,12 @@ RSpec.describe Specbandit::Configuration do
       ENV['SPECBANDIT_KEY_RERUN_TTL'] = '86400'
       config = described_class.new
       expect(config.key_rerun_ttl).to eq(86_400)
+    end
+
+    it 'reads rerun from SPECBANDIT_RERUN' do
+      ENV['SPECBANDIT_RERUN'] = '1'
+      config = described_class.new
+      expect(config.rerun).to be true
     end
 
     it 'reads adapter from SPECBANDIT_ADAPTER' do
@@ -173,6 +185,15 @@ RSpec.describe Specbandit::Configuration do
       config.key_rerun_ttl = 0
       expect { config.validate! }.to raise_error(
         Specbandit::Error, /key_rerun_ttl must be a positive integer/
+      )
+    end
+
+    it 'raises when rerun is set without key_rerun' do
+      config.key = 'valid-key'
+      config.rerun = true
+      config.key_rerun = nil
+      expect { config.validate! }.to raise_error(
+        Specbandit::Error, /--rerun requires --key-rerun to be set/
       )
     end
 

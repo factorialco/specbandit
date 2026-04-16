@@ -5,7 +5,7 @@ require 'json'
 
 module Specbandit
   class Worker
-    attr_reader :queue, :key, :batch_size, :adapter, :key_rerun, :key_rerun_ttl, :output, :verbose
+    attr_reader :queue, :key, :batch_size, :adapter, :key_rerun, :key_rerun_ttl, :rerun, :output, :verbose
 
     def initialize(
       key: Specbandit.configuration.key,
@@ -13,6 +13,7 @@ module Specbandit
       adapter: nil,
       key_rerun: Specbandit.configuration.key_rerun,
       key_rerun_ttl: Specbandit.configuration.key_rerun_ttl,
+      rerun: Specbandit.configuration.rerun,
       verbose: Specbandit.configuration.verbose,
       queue: nil,
       output: $stdout,
@@ -24,6 +25,7 @@ module Specbandit
       @batch_size = batch_size
       @key_rerun = key_rerun
       @key_rerun_ttl = key_rerun_ttl
+      @rerun = rerun
       @verbose = verbose
       @queue = queue || RedisQueue.new
       @output = output
@@ -51,6 +53,11 @@ module Specbandit
                     rerun_files = queue.read_all(key_rerun)
                     if rerun_files.any?
                       run_replay(rerun_files)
+                    elsif rerun
+                      output.puts "[specbandit] ERROR: --rerun flag is set but rerun key '#{key_rerun}' is empty."
+                      output.puts '[specbandit] The rerun key may have expired (TTL) or Redis was flushed.'
+                      output.puts '[specbandit] Cannot replay — failing to prevent silent false pass.'
+                      1
                     else
                       run_steal(record: true)
                     end
