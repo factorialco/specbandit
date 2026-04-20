@@ -91,6 +91,62 @@ RSpec.describe Specbandit::RedisQueue do
     end
   end
 
+  describe 'retry on connection failure' do
+    before do
+      allow(queue).to receive(:sleep)
+      allow(queue).to receive(:warn)
+    end
+
+    it 'retries and succeeds on transient connection error' do
+      call_count = 0
+      allow(redis_double).to receive(:llen).with('my-key') do
+        call_count += 1
+        raise Redis::CannotConnectError, 'connection refused' if call_count < 3
+
+        42
+      end
+
+      expect(queue.length('my-key')).to eq(42)
+      expect(call_count).to eq(3)
+    end
+
+    it 'raises after exhausting all 3 attempts' do
+      allow(redis_double).to receive(:llen).with('my-key')
+                                           .and_raise(Redis::CannotConnectError, 'connection refused')
+
+      expect { queue.length('my-key') }.to raise_error(Redis::CannotConnectError)
+    end
+
+    it 'uses exponential backoff with base 1s' do
+      call_count = 0
+      allow(redis_double).to receive(:llen).with('my-key') do
+        call_count += 1
+        raise Redis::CannotConnectError, 'connection refused' if call_count < 3
+
+        42
+      end
+
+      queue.length('my-key')
+
+      expect(queue).to have_received(:sleep).with(2).ordered
+      expect(queue).to have_received(:sleep).with(4).ordered
+    end
+
+    it 'prints a warning to stderr on each retry' do
+      call_count = 0
+      allow(redis_double).to receive(:llen).with('my-key') do
+        call_count += 1
+        raise Redis::CannotConnectError, 'connection refused' if call_count < 2
+
+        42
+      end
+
+      queue.length('my-key')
+
+      expect(queue).to have_received(:warn).with(%r{Redis connection failed \(attempt 1/3\).*Retrying in 2s})
+    end
+  end
+
   describe '#close' do
     it 'closes the Redis connection' do
       expect(redis_double).to receive(:close)
