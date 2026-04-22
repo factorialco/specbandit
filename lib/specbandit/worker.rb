@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require 'stringio'
 require 'json'
 
 module Specbandit
@@ -67,8 +66,6 @@ module Specbandit
 
       print_summary if @batch_results.any?
       merge_json_results
-      write_github_step_summary if ENV['GITHUB_STEP_SUMMARY']
-
       exit_code
     ensure
       adapter.teardown
@@ -80,29 +77,31 @@ module Specbandit
     # Used when re-running a failed CI job -- the rerun key already
     # contains the exact files this runner executed previously.
     def run_replay(files)
-      output.puts "[specbandit] Replay mode: found #{files.size} files in rerun key '#{key_rerun}'."
-      output.puts '[specbandit] Running previously recorded files (not touching shared queue).'
+      output.puts "[specbandit] Replay mode: found #{files.size} files in rerun key '#{key_rerun}'." if verbose
+      output.puts '[specbandit] Running previously recorded files (not touching shared queue).' if verbose
 
       failed = false
       batch_num = 0
 
       files.each_slice(batch_size) do |batch|
         batch_num += 1
-        output.puts "[specbandit] Batch ##{batch_num}: running #{batch.size} files"
+        output.puts "[specbandit] Batch ##{batch_num}: running #{batch.size} files" if verbose
         batch.each { |f| output.puts "  #{f}" } if verbose
 
         result = adapter.run_batch(batch, batch_num)
         process_batch_result(result)
 
         if result.exit_code != 0
-          output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{result.exit_code})"
+          output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{result.exit_code})" if verbose
           failed = true
-        else
+        elsif verbose
           output.puts "[specbandit] Batch ##{batch_num} passed."
         end
       end
 
-      output.puts "[specbandit] Replay finished: #{batch_num} batches. #{failed ? 'SOME FAILED' : 'All passed.'}"
+      if verbose
+        output.puts "[specbandit] Replay finished: #{batch_num} batches. #{failed ? 'SOME FAILED' : 'All passed.'}"
+      end
       failed ? 1 : 0
     end
 
@@ -111,8 +110,8 @@ module Specbandit
     # rerun key so this runner can replay them on a re-run.
     def run_steal(record:)
       mode_label = record ? 'Record' : 'Steal'
-      output.puts "[specbandit] #{mode_label} mode: stealing batches from '#{key}'."
-      output.puts "[specbandit] Recording stolen files to rerun key '#{key_rerun}'." if record
+      output.puts "[specbandit] #{mode_label} mode: stealing batches from '#{key}'." if verbose
+      output.puts "[specbandit] Recording stolen files to rerun key '#{key_rerun}'." if verbose && record
 
       failed = false
       batch_num = 0
@@ -121,7 +120,7 @@ module Specbandit
         files = queue.steal(key, batch_size)
 
         if files.empty?
-          output.puts '[specbandit] Queue exhausted. No more files to run.'
+          output.puts '[specbandit] Queue exhausted. No more files to run.' if verbose
           break
         end
 
@@ -129,23 +128,23 @@ module Specbandit
         queue.push(key_rerun, files, ttl: key_rerun_ttl) if record
 
         batch_num += 1
-        output.puts "[specbandit] Batch ##{batch_num}: running #{files.size} files"
+        output.puts "[specbandit] Batch ##{batch_num}: running #{files.size} files" if verbose
         files.each { |f| output.puts "  #{f}" } if verbose
 
         result = adapter.run_batch(files, batch_num)
         process_batch_result(result)
 
         if result.exit_code != 0
-          output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{result.exit_code})"
+          output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{result.exit_code})" if verbose
           failed = true
-        else
+        elsif verbose
           output.puts "[specbandit] Batch ##{batch_num} passed."
         end
       end
 
       if batch_num.zero?
-        output.puts '[specbandit] Nothing to do (queue was empty).'
-      else
+        output.puts '[specbandit] Nothing to do (queue was empty).' if verbose
+      elsif verbose
         output.puts "[specbandit] Finished #{batch_num} batches. #{failed ? 'SOME FAILED' : 'All passed.'}"
       end
 
@@ -309,93 +308,6 @@ module Specbandit
       parts << "#{@accumulated_summary[:failure_count]} failures"
       parts << "#{@accumulated_summary[:pending_count]} pending" if @accumulated_summary[:pending_count] > 0
       parts.join(', ')
-    end
-
-    # Write a markdown summary to $GITHUB_STEP_SUMMARY for GitHub Actions.
-    def write_github_step_summary
-      path = ENV['GITHUB_STEP_SUMMARY']
-      return unless path
-
-      md = StringIO.new
-
-      if has_rspec_results?
-        write_rspec_github_summary(md)
-      else
-        write_generic_github_summary(md)
-      end
-
-      File.open(path, 'a') { |f| f.write(md.string) }
-    rescue StandardError
-      # Never fail the build because of summary writing
-      nil
-    end
-
-    def write_rspec_github_summary(md)
-      md.puts '### Specbandit Results'
-      md.puts ''
-      md.puts '| Metric | Value |'
-      md.puts '|--------|-------|'
-      md.puts "| Batches | #{batch_durations.size} |"
-      md.puts "| Examples | #{@accumulated_summary[:example_count]} |"
-      md.puts "| Failures | #{@accumulated_summary[:failure_count]} |"
-      md.puts "| Pending | #{@accumulated_summary[:pending_count]} |"
-
-      md.puts format('| Batch time (min) | %.1fs |', batch_durations.min || 0)
-      md.puts format('| Batch time (avg) | %.1fs |',
-                     batch_durations.empty? ? 0 : batch_durations.sum / batch_durations.size)
-      md.puts format('| Batch time (max) | %.1fs |', batch_durations.max || 0)
-      md.puts ''
-
-      failed_examples = @accumulated_examples.select { |e| e['status'] == 'failed' }
-      return unless failed_examples.any?
-
-      md.puts "<details><summary>#{failed_examples.size} failed specs</summary>"
-      md.puts ''
-      md.puts '| Location | Description | Error |'
-      md.puts '|----------|-------------|-------|'
-      failed_examples.each do |ex|
-        location = ex['file_path'] || 'unknown'
-        line = ex['line_number']
-        location = "#{location}:#{line}" if line
-        desc = (ex['full_description'] || ex['description'] || '').gsub('|', '\\|')
-        message = (ex.dig('exception', 'message') || '').gsub('|', '\\|').gsub("\n", ' ')
-        message = "#{message[0, 100]}..." if message.length > 100
-        md.puts "| `#{location}` | #{desc} | #{message} |"
-      end
-      md.puts ''
-      md.puts '</details>'
-    end
-
-    def write_generic_github_summary(md)
-      total_files = @batch_results.sum { |r| r.files.size }
-      failed_batch_results = @batch_results.select { |r| r.exit_code != 0 }
-
-      md.puts '### Specbandit Results'
-      md.puts ''
-      md.puts '| Metric | Value |'
-      md.puts '|--------|-------|'
-      md.puts "| Batches | #{batch_durations.size} |"
-      md.puts "| Files | #{total_files} |"
-      md.puts "| Failed batches | #{failed_batch_results.size} |"
-
-      md.puts format('| Batch time (min) | %.1fs |', batch_durations.min || 0)
-      md.puts format('| Batch time (avg) | %.1fs |',
-                     batch_durations.empty? ? 0 : batch_durations.sum / batch_durations.size)
-      md.puts format('| Batch time (max) | %.1fs |', batch_durations.max || 0)
-      md.puts ''
-
-      return unless failed_batch_results.any?
-
-      md.puts "<details><summary>#{failed_batch_results.size} failed batches</summary>"
-      md.puts ''
-      md.puts '| Batch | Exit Code | Files |'
-      md.puts '|-------|-----------|-------|'
-      failed_batch_results.each do |r|
-        files_str = r.files.map { |f| "`#{f}`" }.join(', ')
-        md.puts "| ##{r.batch_num} | #{r.exit_code} | #{files_str} |"
-      end
-      md.puts ''
-      md.puts '</details>'
     end
   end
 end

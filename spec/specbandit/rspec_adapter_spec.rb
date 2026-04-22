@@ -115,14 +115,14 @@ RSpec.describe Specbandit::RspecAdapter do
     end
 
     context 'when not verbose' do
-      it 'does not print RSpec stdout to output' do
+      it 'still prints RSpec stdout to output' do
         allow(RSpec::Core::Runner).to receive(:run) do |_args, _err, out|
           out.print('test output here')
           0
         end
 
         result = adapter.run_batch(['spec/a_spec.rb'], 1)
-        expect(output.string).not_to include('test output here')
+        expect(output.string).to include('test output here')
         File.delete(result.json_path) if result.json_path && File.exist?(result.json_path)
       end
     end
