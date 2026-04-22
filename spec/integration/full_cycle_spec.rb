@@ -109,9 +109,10 @@ RSpec.describe 'Full cycle integration', :integration do
     exit_code = worker.run
 
     expect(exit_code).to eq(0)
-    expect(output.string).to include('Batch #1: running 2 files')
-    expect(output.string).to include('Batch #2: running 1 files')
-    expect(output.string).to include('All passed')
+    expect(output.string).to include('[specbandit] Summary')
+    expect(output.string).to include('Batches:  2')
+    expect(output.string).to include('Examples: 3')
+    expect(output.string).to include('Failures: 0')
   ensure
     FileUtils.rm_rf(dir) if dir
   end

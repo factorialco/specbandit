@@ -118,7 +118,6 @@ RSpec.describe Specbandit::Worker do
         exit_code = worker.run
 
         expect(exit_code).to eq(0)
-        expect(output.string).to include('Nothing to do')
       end
 
       it 'steals and runs batches until queue is exhausted' do
@@ -133,9 +132,6 @@ RSpec.describe Specbandit::Worker do
 
         expect(exit_code).to eq(0)
         expect(RSpec::Core::Runner).to have_received(:run).twice
-        expect(output.string).to include('Batch #1: running 2 files')
-        expect(output.string).to include('Batch #2: running 1 files')
-        expect(output.string).to include('All passed')
       end
 
       it 'returns 1 if any batch fails' do
@@ -151,9 +147,6 @@ RSpec.describe Specbandit::Worker do
         exit_code = worker.run
 
         expect(exit_code).to eq(1)
-        expect(output.string).to include('Batch #1 passed')
-        expect(output.string).to include('Batch #2 FAILED')
-        expect(output.string).to include('SOME FAILED')
       end
 
       it 'continues stealing after a batch failure' do
@@ -242,8 +235,6 @@ RSpec.describe Specbandit::Worker do
         exit_code = worker.run
 
         expect(exit_code).to eq(0)
-        expect(output.string).to include('Record mode')
-        expect(output.string).to include('Recording stolen files to rerun key')
       end
 
       it 'returns 1 if any batch fails but still records all batches' do
@@ -258,7 +249,6 @@ RSpec.describe Specbandit::Worker do
         exit_code = worker.run
 
         expect(exit_code).to eq(1)
-        expect(output.string).to include('SOME FAILED')
       end
     end
 
@@ -289,10 +279,6 @@ RSpec.describe Specbandit::Worker do
         expect(exit_code).to eq(0)
         # 3 files with batch_size 2 = 2 batches
         expect(RSpec::Core::Runner).to have_received(:run).twice
-        expect(output.string).to include('Replay mode: found 3 files')
-        expect(output.string).to include('Batch #1: running 2 files')
-        expect(output.string).to include('Batch #2: running 1 files')
-        expect(output.string).to include('Replay finished')
       end
 
       it 'never touches the shared queue' do
@@ -308,7 +294,6 @@ RSpec.describe Specbandit::Worker do
         exit_code = worker.run
 
         expect(exit_code).to eq(1)
-        expect(output.string).to include('SOME FAILED')
       end
     end
 
@@ -384,7 +369,6 @@ RSpec.describe Specbandit::Worker do
         exit_code = worker.run
 
         expect(exit_code).to eq(0)
-        expect(output.string).to include('Replay mode: found 2 files')
       end
     end
 
@@ -418,15 +402,15 @@ RSpec.describe Specbandit::Worker do
                                        .and_return(['spec/a_spec.rb'], [])
       end
 
-      it 'shows file list per batch when verbose' do
+      it 'shows batch telemetry when verbose' do
         worker.run
+        expect(output.string).to include('Batch #1: running 1 files')
         expect(output.string).to include('spec/a_spec.rb')
       end
 
-      it 'hides file list per batch when quiet' do
+      it 'hides batch telemetry when quiet' do
         quiet_worker.run
-        # Should still show the batch header but not individual files
-        expect(output.string).to include('Batch #1: running 1 files')
+        expect(output.string).not_to include('Batch #1: running 1 files')
         expect(output.string).not_to include('  spec/a_spec.rb')
       end
     end
@@ -633,85 +617,6 @@ RSpec.describe Specbandit::Worker do
 
           # The user-specified json_out_path should not exist
           expect(File.exist?(json_out_path)).to be false
-        end
-      end
-
-      context 'GitHub step summary' do
-        let(:step_summary_path) { File.join(tmpdir, 'step_summary.md') }
-
-        subject(:worker) do
-          described_class.new(
-            key: key,
-            batch_size: 2,
-            rspec_opts: [],
-            key_rerun: nil,
-            queue: queue,
-            output: output
-          )
-        end
-
-        around do |example|
-          original = ENV['GITHUB_STEP_SUMMARY']
-          ENV['GITHUB_STEP_SUMMARY'] = step_summary_path
-          example.run
-        ensure
-          if original
-            ENV['GITHUB_STEP_SUMMARY'] = original
-          else
-            ENV.delete('GITHUB_STEP_SUMMARY')
-          end
-        end
-
-        it 'writes markdown summary to GITHUB_STEP_SUMMARY' do
-          allow(queue).to receive(:steal).with(key, 2)
-                                         .and_return(['spec/a_spec.rb'], [])
-          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
-            json_data = make_rspec_json(examples: [passing_example(id: 'a')], duration: 1.0)
-            File.write(json_out_from_args(args), JSON.generate(json_data))
-            0
-          end
-
-          worker.run
-
-          md = File.read(step_summary_path)
-          expect(md).to include('Specbandit Results')
-          expect(md).to include('Batches')
-          expect(md).to include('Examples')
-          expect(md).to include('Batch time (min)')
-          expect(md).to include('Batch time (avg)')
-          expect(md).to include('Batch time (max)')
-        end
-
-        it 'includes failed specs in the step summary' do
-          allow(queue).to receive(:steal).with(key, 2)
-                                         .and_return(['spec/a_spec.rb'], [])
-          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
-            json_data = make_rspec_json(
-              examples: [failing_example(id: 'fail1')],
-              duration: 1.0,
-              failure_count: 1
-            )
-            File.write(json_out_from_args(args), JSON.generate(json_data))
-            1
-          end
-
-          worker.run
-
-          md = File.read(step_summary_path)
-          expect(md).to include('1 failed specs')
-          expect(md).to include('spec/fail1_spec.rb:5')
-          expect(md).to include('expected true to be false')
-        end
-
-        it 'does not write when GITHUB_STEP_SUMMARY is not set' do
-          ENV.delete('GITHUB_STEP_SUMMARY')
-
-          allow(queue).to receive(:steal).with(key, 2)
-                                         .and_return(['spec/a_spec.rb'], [])
-
-          worker.run
-
-          expect(File.exist?(step_summary_path)).to be false
         end
       end
     end

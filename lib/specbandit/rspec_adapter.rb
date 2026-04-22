@@ -65,10 +65,10 @@ module Specbandit
     ensure
       # Print RSpec output through our output stream
       rspec_output = out&.string
-      output.print(rspec_output) if verbose && rspec_output && !rspec_output.empty?
+      output.print(rspec_output) if rspec_output && !rspec_output.empty?
 
       rspec_err = err&.string
-      output.print(rspec_err) if verbose && rspec_err && !rspec_err.empty?
+      output.print(rspec_err) if rspec_err && !rspec_err.empty?
 
       # Don't unlink the tempfile here — the Worker needs to read it.
       # The Worker is responsible for cleanup after accumulation.
