@@ -4,7 +4,8 @@ require 'json'
 
 module Specbandit
   class Worker
-    attr_reader :queue, :key, :batch_size, :adapter, :key_rerun, :key_rerun_ttl, :rerun, :output, :verbose
+    attr_reader :queue, :key, :batch_size, :adapter, :key_rerun, :key_rerun_ttl, :key_failed, :key_failed_ttl, :rerun,
+                :output, :verbose
 
     def initialize(
       key: Specbandit.configuration.key,
@@ -12,6 +13,8 @@ module Specbandit
       adapter: nil,
       key_rerun: Specbandit.configuration.key_rerun,
       key_rerun_ttl: Specbandit.configuration.key_rerun_ttl,
+      key_failed: Specbandit.configuration.key_failed,
+      key_failed_ttl: Specbandit.configuration.key_failed_ttl,
       rerun: Specbandit.configuration.rerun,
       verbose: Specbandit.configuration.verbose,
       queue: nil,
@@ -24,6 +27,8 @@ module Specbandit
       @batch_size = batch_size
       @key_rerun = key_rerun
       @key_rerun_ttl = key_rerun_ttl
+      @key_failed = key_failed
+      @key_failed_ttl = key_failed_ttl
       @rerun = rerun
       @verbose = verbose
       @queue = queue || RedisQueue.new
@@ -90,6 +95,7 @@ module Specbandit
 
         result = adapter.run_batch(batch, batch_num)
         process_batch_result(result)
+        record_failed_files(batch, result)
 
         if result.exit_code != 0
           output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{result.exit_code})" if verbose
@@ -133,6 +139,7 @@ module Specbandit
 
         result = adapter.run_batch(files, batch_num)
         process_batch_result(result)
+        record_failed_files(files, result)
 
         if result.exit_code != 0
           output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{result.exit_code})" if verbose
@@ -149,6 +156,16 @@ module Specbandit
       end
 
       failed ? 1 : 0
+    end
+
+    # Record failed files to the failed key in Redis for later review.
+    # Called after each batch; only pushes when key_failed is configured
+    # and the batch had a non-zero exit code.
+    def record_failed_files(files, result)
+      return unless key_failed
+      return if result.exit_code.zero?
+
+      queue.push(key_failed, files, ttl: key_failed_ttl)
     end
 
     # Process a BatchResult: store it, and for RSpec batches,

@@ -49,6 +49,14 @@ RSpec.describe Specbandit::Configuration do
     it 'has empty command_opts by default' do
       expect(config.command_opts).to eq([])
     end
+
+    it 'has nil key_failed by default' do
+      expect(config.key_failed).to be_nil
+    end
+
+    it 'uses default key_failed_ttl of 1 week' do
+      expect(config.key_failed_ttl).to eq(604_800)
+    end
   end
 
   describe 'environment variable overrides' do
@@ -64,7 +72,9 @@ RSpec.describe Specbandit::Configuration do
         'SPECBANDIT_RERUN',
         'SPECBANDIT_ADAPTER',
         'SPECBANDIT_COMMAND',
-        'SPECBANDIT_COMMAND_OPTS'
+        'SPECBANDIT_COMMAND_OPTS',
+        'SPECBANDIT_KEY_FAILED',
+        'SPECBANDIT_KEY_FAILED_TTL'
       )
       example.run
     ensure
@@ -79,6 +89,8 @@ RSpec.describe Specbandit::Configuration do
       ENV.delete('SPECBANDIT_ADAPTER')
       ENV.delete('SPECBANDIT_COMMAND')
       ENV.delete('SPECBANDIT_COMMAND_OPTS')
+      ENV.delete('SPECBANDIT_KEY_FAILED')
+      ENV.delete('SPECBANDIT_KEY_FAILED_TTL')
       original_env.each { |k, v| ENV[k] = v }
     end
 
@@ -147,6 +159,18 @@ RSpec.describe Specbandit::Configuration do
       config = described_class.new
       expect(config.command_opts).to eq(['--format', 'documentation', '--color'])
     end
+
+    it 'reads key_failed from SPECBANDIT_KEY_FAILED' do
+      ENV['SPECBANDIT_KEY_FAILED'] = 'pr-42-failed'
+      config = described_class.new
+      expect(config.key_failed).to eq('pr-42-failed')
+    end
+
+    it 'reads key_failed_ttl from SPECBANDIT_KEY_FAILED_TTL' do
+      ENV['SPECBANDIT_KEY_FAILED_TTL'] = '86400'
+      config = described_class.new
+      expect(config.key_failed_ttl).to eq(86_400)
+    end
   end
 
   describe '#validate!' do
@@ -185,6 +209,14 @@ RSpec.describe Specbandit::Configuration do
       config.key_rerun_ttl = 0
       expect { config.validate! }.to raise_error(
         Specbandit::Error, /key_rerun_ttl must be a positive integer/
+      )
+    end
+
+    it 'raises when key_failed_ttl is not positive' do
+      config.key = 'valid-key'
+      config.key_failed_ttl = 0
+      expect { config.validate! }.to raise_error(
+        Specbandit::Error, /key_failed_ttl must be a positive integer/
       )
     end
 
