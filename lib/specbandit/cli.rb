@@ -123,6 +123,14 @@ module Specbandit
           Specbandit.configuration.key_rerun_ttl = v
         end
 
+        opts.on('--key-failed KEY', 'Redis key to record failed test files for later review') do |v|
+          Specbandit.configuration.key_failed = v
+        end
+
+        opts.on('--key-failed-ttl SECONDS', Integer, 'TTL for failed key in seconds (default: 604800 / 1 week)') do |v|
+          Specbandit.configuration.key_failed_ttl = v
+        end
+
         opts.on('--rerun', 'Signal this is a re-run (fail hard if rerun key is empty)') do
           Specbandit.configuration.rerun = true
         end
@@ -207,9 +215,11 @@ module Specbandit
           --rspec-opts OPTS      Extra options forwarded to RSpec (for rspec adapter)
           --batch-size N         Files per batch (default: 5, or set SPECBANDIT_BATCH_SIZE)
           --redis-url URL        Redis URL (default: redis://localhost:6379)
-          --key-rerun KEY        Per-runner rerun key for re-run support
-          --key-rerun-ttl N      TTL for rerun key (default: 604800 / 1 week)
-          --rerun                Signal this is a re-run (fail hard if rerun key is empty)
+           --key-rerun KEY        Per-runner rerun key for re-run support
+           --key-rerun-ttl N      TTL for rerun key (default: 604800 / 1 week)
+           --key-failed KEY       Redis key to record failed test files
+           --key-failed-ttl N     TTL for failed key (default: 604800 / 1 week)
+           --rerun                Signal this is a re-run (fail hard if rerun key is empty)
           --verbose              Show per-batch file list and full command output
 
           Arguments after -- are forwarded to the adapter (rspec opts, command opts, etc.).
@@ -226,6 +236,8 @@ module Specbandit
           SPECBANDIT_RSPEC_OPTS       RSpec options (rspec adapter)
           SPECBANDIT_KEY_RERUN        Per-runner rerun key
           SPECBANDIT_KEY_RERUN_TTL    Rerun key TTL in seconds (default: 604800)
+          SPECBANDIT_KEY_FAILED       Redis key for failed test files
+          SPECBANDIT_KEY_FAILED_TTL   Failed key TTL in seconds (default: 604800)
           SPECBANDIT_RERUN            Signal re-run mode (1/true/yes)
           SPECBANDIT_VERBOSE          Enable verbose output (1/true/yes)
 

@@ -4,12 +4,14 @@ module Specbandit
   class Configuration
     attr_accessor :redis_url, :batch_size, :key, :rspec_opts, :key_ttl,
                   :key_rerun, :key_rerun_ttl, :rerun, :verbose,
-                  :adapter, :command, :command_opts
+                  :adapter, :command, :command_opts,
+                  :key_failed, :key_failed_ttl
 
     DEFAULT_REDIS_URL = 'redis://localhost:6379'
     DEFAULT_BATCH_SIZE = 5
     DEFAULT_KEY_TTL = 21_600 # 6 hours in seconds
     DEFAULT_KEY_RERUN_TTL = 604_800 # 1 week in seconds
+    DEFAULT_KEY_FAILED_TTL = 604_800 # 1 week in seconds
     DEFAULT_ADAPTER = 'cli'
 
     def initialize
@@ -25,6 +27,8 @@ module Specbandit
       @adapter = ENV.fetch('SPECBANDIT_ADAPTER', DEFAULT_ADAPTER)
       @command = ENV.fetch('SPECBANDIT_COMMAND', nil)
       @command_opts = parse_space_separated(ENV.fetch('SPECBANDIT_COMMAND_OPTS', nil))
+      @key_failed = ENV.fetch('SPECBANDIT_KEY_FAILED', nil)
+      @key_failed_ttl = Integer(ENV.fetch('SPECBANDIT_KEY_FAILED_TTL', DEFAULT_KEY_FAILED_TTL))
     end
 
     def validate!
@@ -32,6 +36,7 @@ module Specbandit
       raise Error, 'batch_size must be a positive integer' unless batch_size.positive?
       raise Error, 'key_ttl must be a positive integer' unless key_ttl.positive?
       raise Error, 'key_rerun_ttl must be a positive integer' unless key_rerun_ttl.positive?
+      raise Error, 'key_failed_ttl must be a positive integer' unless key_failed_ttl.positive?
       raise Error, '--rerun requires --key-rerun to be set' if rerun && (key_rerun.nil? || key_rerun.empty?)
     end
 

@@ -116,4 +116,75 @@ RSpec.describe 'Full cycle integration', :integration do
   ensure
     FileUtils.rm_rf(dir) if dir
   end
+
+  it 'records only the individually failed files, not the whole batch' do
+    key_failed = "#{key}-failed"
+
+    Specbandit.configure do |c|
+      c.redis_url = redis_url
+      c.key = key
+      # Use a large batch size so passing and failing files land in the same batch
+      c.batch_size = 10
+    end
+
+    # Create temporary spec files: 2 pass, 1 fails — all in one batch
+    dir = Dir.mktmpdir('specbandit-test')
+    2.times do |i|
+      File.write(File.join(dir, "pass_#{i}_spec.rb"), <<~RUBY)
+        RSpec.describe "pass_#{i}" do
+          it "passes" do
+            expect(true).to eq(true)
+          end
+        end
+      RUBY
+    end
+    File.write(File.join(dir, 'fail_0_spec.rb'), <<~RUBY)
+      RSpec.describe "fail_0" do
+        it "fails" do
+          expect(true).to eq(false)
+        end
+      end
+    RUBY
+
+    spec_files = Dir.glob(File.join(dir, '*_spec.rb')).sort
+
+    # Push
+    redis_queue = Specbandit::RedisQueue.new(redis_url: redis_url)
+    publisher = Specbandit::Publisher.new(
+      key: key,
+      queue: redis_queue,
+      output: output
+    )
+    count = publisher.publish(files: spec_files)
+    expect(count).to eq(3)
+
+    # Work with key_failed configured
+    adapter = Specbandit::RspecAdapter.new(
+      rspec_opts: ['--format', 'progress', '--no-color'],
+      verbose: false,
+      output: output
+    )
+    worker = Specbandit::Worker.new(
+      key: key,
+      batch_size: 10,
+      adapter: adapter,
+      key_failed: key_failed,
+      key_failed_ttl: 3600,
+      queue: Specbandit::RedisQueue.new(redis_url: redis_url),
+      output: output
+    )
+    exit_code = worker.run
+
+    expect(exit_code).to eq(1)
+
+    # Verify only the failing file was recorded, not the passing ones
+    failed_files = redis_queue.read_all(key_failed)
+    expect(failed_files.size).to eq(1)
+    expect(failed_files.first).to end_with('fail_0_spec.rb')
+
+    redis_queue.close
+  ensure
+    @redis&.del(key_failed) if key_failed
+    FileUtils.rm_rf(dir) if dir
+  end
 end

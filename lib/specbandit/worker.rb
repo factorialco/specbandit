@@ -4,7 +4,8 @@ require 'json'
 
 module Specbandit
   class Worker
-    attr_reader :queue, :key, :batch_size, :adapter, :key_rerun, :key_rerun_ttl, :rerun, :output, :verbose
+    attr_reader :queue, :key, :batch_size, :adapter, :key_rerun, :key_rerun_ttl, :key_failed, :key_failed_ttl, :rerun,
+                :output, :verbose
 
     def initialize(
       key: Specbandit.configuration.key,
@@ -12,6 +13,8 @@ module Specbandit
       adapter: nil,
       key_rerun: Specbandit.configuration.key_rerun,
       key_rerun_ttl: Specbandit.configuration.key_rerun_ttl,
+      key_failed: Specbandit.configuration.key_failed,
+      key_failed_ttl: Specbandit.configuration.key_failed_ttl,
       rerun: Specbandit.configuration.rerun,
       verbose: Specbandit.configuration.verbose,
       queue: nil,
@@ -24,6 +27,8 @@ module Specbandit
       @batch_size = batch_size
       @key_rerun = key_rerun
       @key_rerun_ttl = key_rerun_ttl
+      @key_failed = key_failed
+      @key_failed_ttl = key_failed_ttl
       @rerun = rerun
       @verbose = verbose
       @queue = queue || RedisQueue.new
@@ -89,6 +94,7 @@ module Specbandit
         batch.each { |f| output.puts "  #{f}" } if verbose
 
         result = adapter.run_batch(batch, batch_num)
+        record_failed_files(batch, result)
         process_batch_result(result)
 
         if result.exit_code != 0
@@ -132,6 +138,7 @@ module Specbandit
         files.each { |f| output.puts "  #{f}" } if verbose
 
         result = adapter.run_batch(files, batch_num)
+        record_failed_files(files, result)
         process_batch_result(result)
 
         if result.exit_code != 0
@@ -149,6 +156,39 @@ module Specbandit
       end
 
       failed ? 1 : 0
+    end
+
+    # Record failed files to the failed key in Redis for later review.
+    # Called after each batch; only pushes when key_failed is configured
+    # and the batch had a non-zero exit code.
+    #
+    # For RSpec batches with JSON output, only the individual failed file
+    # paths are recorded (not the entire batch). For CLI adapter batches
+    # (no per-file granularity), the whole batch is recorded as fallback.
+    def record_failed_files(files, result)
+      return unless key_failed
+      return if result.exit_code.zero?
+
+      failed_files = extract_failed_files(result) || files
+      return if failed_files.empty?
+
+      queue.push(key_failed, failed_files, ttl: key_failed_ttl)
+    end
+
+    # Extract individual failed file paths from an RspecBatchResult's JSON output.
+    # Returns nil when per-file data is not available (CLI adapter).
+    def extract_failed_files(result)
+      return nil unless result.is_a?(RspecBatchResult) && result.json_path && File.exist?(result.json_path)
+
+      data = JSON.parse(File.read(result.json_path))
+      failed = data.fetch('examples', [])
+                   .select { |e| e['status'] == 'failed' }
+                   .filter_map { |e| e['file_path'] }
+                   .uniq
+
+      failed.empty? ? nil : failed
+    rescue JSON::ParserError
+      nil
     end
 
     # Process a BatchResult: store it, and for RSpec batches,
