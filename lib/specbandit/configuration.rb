@@ -5,7 +5,7 @@ module Specbandit
     attr_accessor :redis_url, :batch_size, :key, :rspec_opts, :key_ttl,
                   :key_rerun, :key_rerun_ttl, :rerun, :verbose,
                   :adapter, :command, :command_opts,
-                  :key_failed, :key_failed_ttl
+                  :key_failed, :key_failed_ttl, :report
 
     DEFAULT_REDIS_URL = 'redis://localhost:6379'
     DEFAULT_BATCH_SIZE = 5
@@ -29,6 +29,7 @@ module Specbandit
       @command_opts = parse_space_separated(ENV.fetch('SPECBANDIT_COMMAND_OPTS', nil))
       @key_failed = ENV.fetch('SPECBANDIT_KEY_FAILED', nil)
       @key_failed_ttl = Integer(ENV.fetch('SPECBANDIT_KEY_FAILED_TTL', DEFAULT_KEY_FAILED_TTL))
+      @report = ENV.fetch('SPECBANDIT_REPORT', nil)
     end
 
     def validate!

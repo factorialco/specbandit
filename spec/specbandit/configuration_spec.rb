@@ -57,6 +57,10 @@ RSpec.describe Specbandit::Configuration do
     it 'uses default key_failed_ttl of 1 week' do
       expect(config.key_failed_ttl).to eq(604_800)
     end
+
+    it 'has nil report by default' do
+      expect(config.report).to be_nil
+    end
   end
 
   describe 'environment variable overrides' do
@@ -74,7 +78,8 @@ RSpec.describe Specbandit::Configuration do
         'SPECBANDIT_COMMAND',
         'SPECBANDIT_COMMAND_OPTS',
         'SPECBANDIT_KEY_FAILED',
-        'SPECBANDIT_KEY_FAILED_TTL'
+        'SPECBANDIT_KEY_FAILED_TTL',
+        'SPECBANDIT_REPORT'
       )
       example.run
     ensure
@@ -91,6 +96,7 @@ RSpec.describe Specbandit::Configuration do
       ENV.delete('SPECBANDIT_COMMAND_OPTS')
       ENV.delete('SPECBANDIT_KEY_FAILED')
       ENV.delete('SPECBANDIT_KEY_FAILED_TTL')
+      ENV.delete('SPECBANDIT_REPORT')
       original_env.each { |k, v| ENV[k] = v }
     end
 
@@ -170,6 +176,12 @@ RSpec.describe Specbandit::Configuration do
       ENV['SPECBANDIT_KEY_FAILED_TTL'] = '86400'
       config = described_class.new
       expect(config.key_failed_ttl).to eq(86_400)
+    end
+
+    it 'reads report from SPECBANDIT_REPORT' do
+      ENV['SPECBANDIT_REPORT'] = '/tmp/report.json'
+      config = described_class.new
+      expect(config.report).to eq('/tmp/report.json')
     end
   end
 

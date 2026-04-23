@@ -5,7 +5,7 @@ require 'json'
 module Specbandit
   class Worker
     attr_reader :queue, :key, :batch_size, :adapter, :key_rerun, :key_rerun_ttl, :key_failed, :key_failed_ttl, :rerun,
-                :output, :verbose
+                :output, :verbose, :report
 
     def initialize(
       key: Specbandit.configuration.key,
@@ -17,6 +17,7 @@ module Specbandit
       key_failed_ttl: Specbandit.configuration.key_failed_ttl,
       rerun: Specbandit.configuration.rerun,
       verbose: Specbandit.configuration.verbose,
+      report: Specbandit.configuration.report,
       queue: nil,
       output: $stdout,
       # Legacy parameter for backward compatibility.
@@ -31,10 +32,12 @@ module Specbandit
       @key_failed_ttl = key_failed_ttl
       @rerun = rerun
       @verbose = verbose
+      @report = report
       @queue = queue || RedisQueue.new
       @output = output
       @batch_results = []
       @accumulated_examples = []
+      @accumulated_failed_files = []
       @accumulated_summary = { duration: 0.0, example_count: 0, failure_count: 0, pending_count: 0,
                                errors_outside_of_examples_count: 0 }
 
@@ -51,6 +54,7 @@ module Specbandit
     #
     # Returns 0 if all batches passed (or nothing to do), 1 if any batch failed.
     def run
+      @run_start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       adapter.setup
 
       exit_code = if key_rerun
@@ -71,6 +75,7 @@ module Specbandit
 
       print_summary if @batch_results.any?
       merge_json_results
+      write_report
       exit_code
     ensure
       adapter.teardown
@@ -196,6 +201,12 @@ module Specbandit
     def process_batch_result(result)
       @batch_results << result
 
+      # Accumulate failed files for the report while JSON data is still available.
+      if result.exit_code != 0
+        per_file = extract_failed_files(result)
+        @accumulated_failed_files.concat(per_file || result.files)
+      end
+
       # If the adapter returned an RspecBatchResult with a json_path,
       # accumulate the structured results for rich reporting.
       return unless result.is_a?(RspecBatchResult) && result.json_path
@@ -280,6 +291,48 @@ module Specbandit
       }
 
       File.write(path, JSON.pretty_generate(merged))
+    end
+
+    # Write a JSON report file with run statistics when --report is set.
+    def write_report
+      return unless report
+      return if @batch_results.empty?
+
+      wall_time = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - @run_start_time).round(2)
+      durations = batch_durations
+      failed_batches_count = @batch_results.count { |r| r.exit_code != 0 }
+      passed_batches_count = @batch_results.count { |r| r.exit_code == 0 }
+
+      data = {
+        specbandit_version: Specbandit::VERSION,
+        summary: {
+          total_files: @batch_results.sum { |r| r.files.size },
+          total_batches: @batch_results.size,
+          passed_batches: passed_batches_count,
+          failed_batches: failed_batches_count,
+          passed: failed_batches_count == 0
+        },
+        failed_files: @accumulated_failed_files.uniq,
+        total_wall_time: wall_time,
+        batch_timings: {
+          count: durations.size,
+          min: format('%.2f', durations.min || 0),
+          avg: format('%.2f', durations.empty? ? 0 : durations.sum / durations.size),
+          max: format('%.2f', durations.max || 0),
+          all: durations.map { |d| d.round(2) }
+        },
+        batches: @batch_results.map do |r|
+          {
+            batch_num: r.batch_num,
+            files: r.files,
+            exit_code: r.exit_code,
+            duration: r.duration.round(2),
+            passed: r.exit_code == 0
+          }
+        end
+      }
+
+      File.write(report, JSON.pretty_generate(data))
     end
 
     # Print a unified summary to the output stream after all batches.

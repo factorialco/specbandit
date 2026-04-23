@@ -135,6 +135,10 @@ module Specbandit
           Specbandit.configuration.rerun = true
         end
 
+        opts.on('--report FILE', 'Write JSON report with run statistics to FILE') do |v|
+          Specbandit.configuration.report = v
+        end
+
         opts.on('--verbose', 'Show per-batch file list and full command output (default: quiet)') do
           Specbandit.configuration.verbose = true
         end
@@ -220,6 +224,7 @@ module Specbandit
            --key-failed KEY       Redis key to record failed test files
            --key-failed-ttl N     TTL for failed key (default: 604800 / 1 week)
            --rerun                Signal this is a re-run (fail hard if rerun key is empty)
+          --report FILE          Write JSON report to FILE after run
           --verbose              Show per-batch file list and full command output
 
           Arguments after -- are forwarded to the adapter (rspec opts, command opts, etc.).
@@ -240,6 +245,7 @@ module Specbandit
           SPECBANDIT_KEY_FAILED_TTL   Failed key TTL in seconds (default: 604800)
           SPECBANDIT_RERUN            Signal re-run mode (1/true/yes)
           SPECBANDIT_VERBOSE          Enable verbose output (1/true/yes)
+          SPECBANDIT_REPORT           Path to write JSON report file
 
         File input priority for push:
           1. stdin (piped)     echo "spec/a_spec.rb" | specbandit push --key KEY

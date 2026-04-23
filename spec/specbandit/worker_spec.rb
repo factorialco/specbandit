@@ -847,5 +847,157 @@ RSpec.describe Specbandit::Worker do
         end
       end
     end
+
+    context 'report file (--report)' do
+      let(:tmpdir) { Dir.mktmpdir('specbandit-report-test') }
+      let(:report_path) { File.join(tmpdir, 'report.json') }
+
+      after { FileUtils.rm_rf(tmpdir) }
+
+      context 'with generic adapter' do
+        let(:mock_adapter) do
+          adapter = double('Adapter')
+          allow(adapter).to receive(:setup)
+          allow(adapter).to receive(:teardown)
+          adapter
+        end
+
+        it 'writes a JSON report file with correct structure' do
+          call_count = 0
+          allow(mock_adapter).to receive(:run_batch) do |files, batch_num|
+            call_count += 1
+            Specbandit::BatchResult.new(
+              batch_num: batch_num, files: files,
+              exit_code: call_count == 2 ? 1 : 0, duration: call_count * 10.0
+            )
+          end
+
+          allow(queue).to receive(:steal).with(key, 2)
+                                         .and_return(['spec/a_spec.rb', 'spec/b_spec.rb'],
+                                                     ['spec/c_spec.rb'],
+                                                     [])
+
+          worker = described_class.new(
+            key: key, batch_size: 2, adapter: mock_adapter,
+            key_rerun: nil, queue: queue, output: output,
+            report: report_path
+          )
+          worker.run
+
+          expect(File.exist?(report_path)).to be true
+          report = JSON.parse(File.read(report_path))
+
+          expect(report['specbandit_version']).to eq(Specbandit::VERSION)
+          expect(report['summary']['total_files']).to eq(3)
+          expect(report['summary']['total_batches']).to eq(2)
+          expect(report['summary']['passed_batches']).to eq(1)
+          expect(report['summary']['failed_batches']).to eq(1)
+          expect(report['summary']['passed']).to be false
+
+          expect(report['failed_files']).to eq(['spec/c_spec.rb'])
+
+          expect(report['total_wall_time']).to be_a(Numeric)
+          expect(report['total_wall_time']).to be >= 0
+
+          expect(report['batch_timings']['count']).to eq(2)
+          expect(report['batch_timings']['min']).to eq('10.00')
+          expect(report['batch_timings']['max']).to eq('20.00')
+          expect(report['batch_timings']['all']).to eq([10.0, 20.0])
+
+          expect(report['batches'].size).to eq(2)
+          expect(report['batches'][0]['batch_num']).to eq(1)
+          expect(report['batches'][0]['passed']).to be true
+          expect(report['batches'][0]['duration']).to eq(10.0)
+          expect(report['batches'][1]['passed']).to be false
+          expect(report['batches'][1]['exit_code']).to eq(1)
+        end
+
+        it 'does not write a report when --report is not set' do
+          allow(mock_adapter).to receive(:run_batch).and_return(
+            Specbandit::BatchResult.new(batch_num: 1, files: ['spec/a_spec.rb'],
+                                        exit_code: 0, duration: 1.0)
+          )
+          allow(queue).to receive(:steal).with(key, 2)
+                                         .and_return(['spec/a_spec.rb'], [])
+
+          worker = described_class.new(
+            key: key, batch_size: 2, adapter: mock_adapter,
+            key_rerun: nil, queue: queue, output: output,
+            report: nil
+          )
+          worker.run
+
+          expect(File.exist?(report_path)).to be false
+        end
+
+        it 'does not write a report when no batches ran' do
+          allow(queue).to receive(:steal).with(key, 2).and_return([])
+
+          worker = described_class.new(
+            key: key, batch_size: 2, adapter: mock_adapter,
+            key_rerun: nil, queue: queue, output: output,
+            report: report_path
+          )
+          worker.run
+
+          expect(File.exist?(report_path)).to be false
+        end
+
+        it 'reports passed: true when all batches pass' do
+          allow(mock_adapter).to receive(:run_batch).and_return(
+            Specbandit::BatchResult.new(batch_num: 1, files: ['spec/a_spec.rb'],
+                                        exit_code: 0, duration: 5.0)
+          )
+          allow(queue).to receive(:steal).with(key, 2)
+                                         .and_return(['spec/a_spec.rb'], [])
+
+          worker = described_class.new(
+            key: key, batch_size: 2, adapter: mock_adapter,
+            key_rerun: nil, queue: queue, output: output,
+            report: report_path
+          )
+          worker.run
+
+          report = JSON.parse(File.read(report_path))
+          expect(report['summary']['passed']).to be true
+          expect(report['summary']['failed_batches']).to eq(0)
+          expect(report['failed_files']).to eq([])
+        end
+      end
+
+      context 'with RSpec adapter (per-file failed_files granularity)' do
+        it 'reports only individually failed files, not the whole batch' do
+          allow(queue).to receive(:steal).with(key, 3)
+                                         .and_return(['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb'], [])
+
+          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
+            json_path = json_out_from_args(args)
+            if json_path
+              json_data = {
+                'examples' => [
+                  { 'status' => 'passed', 'file_path' => 'spec/a_spec.rb' },
+                  { 'status' => 'failed', 'file_path' => 'spec/b_spec.rb' },
+                  { 'status' => 'failed', 'file_path' => 'spec/c_spec.rb' }
+                ],
+                'summary' => { 'duration' => 1.0, 'example_count' => 3, 'failure_count' => 2,
+                               'pending_count' => 0, 'errors_outside_of_examples_count' => 0 }
+              }
+              File.write(json_path, JSON.generate(json_data))
+            end
+            1
+          end
+
+          worker = described_class.new(
+            key: key, batch_size: 3, rspec_opts: [],
+            key_rerun: nil, queue: queue, output: output,
+            report: report_path
+          )
+          worker.run
+
+          report = JSON.parse(File.read(report_path))
+          expect(report['failed_files']).to match_array(['spec/b_spec.rb', 'spec/c_spec.rb'])
+        end
+      end
+    end
   end
 end
