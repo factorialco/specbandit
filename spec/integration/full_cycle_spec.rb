@@ -117,16 +117,17 @@ RSpec.describe 'Full cycle integration', :integration do
     FileUtils.rm_rf(dir) if dir
   end
 
-  it 'records failed test files to the failed key' do
+  it 'records only the individually failed files, not the whole batch' do
     key_failed = "#{key}-failed"
 
     Specbandit.configure do |c|
       c.redis_url = redis_url
       c.key = key
-      c.batch_size = 2
+      # Use a large batch size so passing and failing files land in the same batch
+      c.batch_size = 10
     end
 
-    # Create temporary spec files: 2 pass, 1 fails
+    # Create temporary spec files: 2 pass, 1 fails — all in one batch
     dir = Dir.mktmpdir('specbandit-test')
     2.times do |i|
       File.write(File.join(dir, "pass_#{i}_spec.rb"), <<~RUBY)
@@ -165,7 +166,7 @@ RSpec.describe 'Full cycle integration', :integration do
     )
     worker = Specbandit::Worker.new(
       key: key,
-      batch_size: 2,
+      batch_size: 10,
       adapter: adapter,
       key_failed: key_failed,
       key_failed_ttl: 3600,
@@ -176,11 +177,13 @@ RSpec.describe 'Full cycle integration', :integration do
 
     expect(exit_code).to eq(1)
 
-    # Verify the failed key contains the files from the failed batch
+    # Verify only the failing file was recorded, not the passing ones
     failed_files = redis_queue.read_all(key_failed)
-    expect(failed_files).not_to be_empty
-    # The failed batch should include the failing spec file
-    expect(failed_files.any? { |f| f.include?('fail_0_spec.rb') }).to be true
+    expect(failed_files.size).to eq(1)
+    expect(failed_files.first).to include('fail_0_spec.rb')
+
+    # Passing files must NOT be in the failed key
+    expect(failed_files.none? { |f| f.include?('pass_') }).to be true
 
     redis_queue.close
   ensure

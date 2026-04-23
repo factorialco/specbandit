@@ -255,6 +255,77 @@ RSpec.describe Specbandit::Worker do
     context 'failed key recording (key_failed set)' do
       let(:key_failed) { 'pr-123-run-456-failed' }
 
+      context 'with RSpec adapter (per-file granularity)' do
+        subject(:worker) do
+          described_class.new(
+            key: key,
+            batch_size: 3,
+            rspec_opts: [],
+            key_rerun: nil,
+            key_failed: key_failed,
+            key_failed_ttl: 604_800,
+            queue: queue,
+            output: output
+          )
+        end
+
+        it 'pushes only the individually failed files, not the whole batch' do
+          expect(queue).to receive(:steal).with(key, 3)
+                                          .and_return(['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb'])
+          expect(queue).to receive(:steal).with(key, 3).and_return([])
+
+          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
+            json_path = json_out_from_args(args)
+            if json_path
+              json_data = {
+                'examples' => [
+                  { 'status' => 'passed', 'file_path' => 'spec/a_spec.rb' },
+                  { 'status' => 'failed', 'file_path' => 'spec/b_spec.rb' },
+                  { 'status' => 'failed', 'file_path' => 'spec/c_spec.rb' }
+                ],
+                'summary' => { 'duration' => 1.0, 'example_count' => 3, 'failure_count' => 2,
+                               'pending_count' => 0, 'errors_outside_of_examples_count' => 0 }
+              }
+              File.write(json_path, JSON.generate(json_data))
+            end
+            1
+          end
+
+          expect(queue).to receive(:push)
+            .with(key_failed, ['spec/b_spec.rb', 'spec/c_spec.rb'], ttl: 604_800)
+
+          worker.run
+        end
+
+        it 'deduplicates file paths when multiple examples fail in the same file' do
+          expect(queue).to receive(:steal).with(key, 3)
+                                          .and_return(['spec/a_spec.rb', 'spec/b_spec.rb'])
+          expect(queue).to receive(:steal).with(key, 3).and_return([])
+
+          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
+            json_path = json_out_from_args(args)
+            if json_path
+              json_data = {
+                'examples' => [
+                  { 'status' => 'failed', 'file_path' => 'spec/a_spec.rb', 'description' => 'test 1' },
+                  { 'status' => 'failed', 'file_path' => 'spec/a_spec.rb', 'description' => 'test 2' },
+                  { 'status' => 'passed', 'file_path' => 'spec/b_spec.rb' }
+                ],
+                'summary' => { 'duration' => 1.0, 'example_count' => 3, 'failure_count' => 2,
+                               'pending_count' => 0, 'errors_outside_of_examples_count' => 0 }
+              }
+              File.write(json_path, JSON.generate(json_data))
+            end
+            1
+          end
+
+          expect(queue).to receive(:push)
+            .with(key_failed, ['spec/a_spec.rb'], ttl: 604_800)
+
+          worker.run
+        end
+      end
+
       context 'in steal mode' do
         let(:mock_adapter) do
           adapter = double('Adapter')
@@ -351,11 +422,23 @@ RSpec.describe Specbandit::Worker do
           allow(queue).to receive(:read_all).with(key_rerun).and_return(recorded_files)
         end
 
-        it 'pushes failed batch files to the failed key during replay' do
-          allow(RSpec::Core::Runner).to receive(:run).and_return(1)
+        it 'pushes only individually failed files to the failed key during replay' do
+          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
+            json_path = json_out_from_args(args)
+            if json_path
+              json_data = {
+                'examples' => [
+                  { 'status' => 'failed', 'file_path' => 'spec/x_spec.rb' },
+                  { 'status' => 'passed', 'file_path' => 'spec/y_spec.rb' }
+                ]
+              }
+              File.write(json_path, JSON.generate(json_data))
+            end
+            1
+          end
 
           expect(queue).to receive(:push)
-            .with(key_failed, ['spec/x_spec.rb', 'spec/y_spec.rb'], ttl: 604_800)
+            .with(key_failed, ['spec/x_spec.rb'], ttl: 604_800)
 
           worker.run
         end

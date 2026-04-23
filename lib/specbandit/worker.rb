@@ -94,8 +94,8 @@ module Specbandit
         batch.each { |f| output.puts "  #{f}" } if verbose
 
         result = adapter.run_batch(batch, batch_num)
-        process_batch_result(result)
         record_failed_files(batch, result)
+        process_batch_result(result)
 
         if result.exit_code != 0
           output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{result.exit_code})" if verbose
@@ -138,8 +138,8 @@ module Specbandit
         files.each { |f| output.puts "  #{f}" } if verbose
 
         result = adapter.run_batch(files, batch_num)
-        process_batch_result(result)
         record_failed_files(files, result)
+        process_batch_result(result)
 
         if result.exit_code != 0
           output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{result.exit_code})" if verbose
@@ -161,11 +161,34 @@ module Specbandit
     # Record failed files to the failed key in Redis for later review.
     # Called after each batch; only pushes when key_failed is configured
     # and the batch had a non-zero exit code.
+    #
+    # For RSpec batches with JSON output, only the individual failed file
+    # paths are recorded (not the entire batch). For CLI adapter batches
+    # (no per-file granularity), the whole batch is recorded as fallback.
     def record_failed_files(files, result)
       return unless key_failed
       return if result.exit_code.zero?
 
-      queue.push(key_failed, files, ttl: key_failed_ttl)
+      failed_files = extract_failed_files(result) || files
+      return if failed_files.empty?
+
+      queue.push(key_failed, failed_files, ttl: key_failed_ttl)
+    end
+
+    # Extract individual failed file paths from an RspecBatchResult's JSON output.
+    # Returns nil when per-file data is not available (CLI adapter).
+    def extract_failed_files(result)
+      return nil unless result.is_a?(RspecBatchResult) && result.json_path && File.exist?(result.json_path)
+
+      data = JSON.parse(File.read(result.json_path))
+      failed = data.fetch('examples', [])
+                   .select { |e| e['status'] == 'failed' }
+                   .filter_map { |e| e['file_path'] }
+                   .uniq
+
+      failed.empty? ? nil : failed
+    rescue JSON::ParserError
+      nil
     end
 
     # Process a BatchResult: store it, and for RSpec batches,
