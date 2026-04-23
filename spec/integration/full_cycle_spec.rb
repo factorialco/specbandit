@@ -180,10 +180,7 @@ RSpec.describe 'Full cycle integration', :integration do
     # Verify only the failing file was recorded, not the passing ones
     failed_files = redis_queue.read_all(key_failed)
     expect(failed_files.size).to eq(1)
-    expect(failed_files.first).to include('fail_0_spec.rb')
-
-    # Passing files must NOT be in the failed key
-    expect(failed_files.none? { |f| f.include?('pass_') }).to be true
+    expect(failed_files.first).to end_with('fail_0_spec.rb')
 
     redis_queue.close
   ensure
