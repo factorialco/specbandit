@@ -318,6 +318,8 @@ Specbandit detects the mode automatically based on the state of `--key-rerun`:
 | Yes | Empty | Yes | **Fail** | Exit 1 with error. Prevents silent false pass on stale re-runs. |
 | No | -- | Yes | **Error** | Validation error: `--rerun` requires `--key-rerun`. |
 
+> **Empty key names count as "not provided".** A `--key-rerun` whose value is an empty string -- e.g. `--key-rerun "$VAR"` where `$VAR` is unset in CI -- is treated exactly like `--key-rerun` being absent (the **No** rows above), not as a configured-but-empty key. Combined with `--rerun`, that means an empty/unset name fails hard (exit 1) rather than silently steal-and-pass. The same applies to `--key-failed`: an empty/unset name is treated as "not configured" and no failed files are recorded.
+
 #### The `--rerun` safety flag
 
 Without `--rerun`, specbandit cannot distinguish a first run from a re-run when the rerun key is empty (e.g., TTL expired or Redis was flushed). In that case it silently falls back to Record mode, which may find an empty shared queue and exit 0 with zero tests -- a **silent false pass**.

@@ -252,6 +252,92 @@ RSpec.describe Specbandit::Worker do
       end
     end
 
+    context 'empty rerun key name (truthiness guard)' do
+      subject(:worker) do
+        described_class.new(
+          key: key,
+          batch_size: 2,
+          rspec_opts: [],
+          key_rerun: '',
+          queue: queue,
+          output: output
+        )
+      end
+
+      it 'treats an empty rerun key as no rerun key and steals without recording' do
+        expect(queue).to receive(:steal).with(key, 2).and_return(['spec/a_spec.rb'])
+        expect(queue).to receive(:steal).with(key, 2).and_return([])
+        expect(queue).not_to receive(:read_all)
+        expect(queue).not_to receive(:push)
+
+        exit_code = worker.run
+
+        expect(exit_code).to eq(0)
+      end
+
+      context 'with --rerun set' do
+        subject(:worker) do
+          described_class.new(
+            key: key,
+            batch_size: 2,
+            rspec_opts: [],
+            key_rerun: '',
+            rerun: true,
+            queue: queue,
+            output: output
+          )
+        end
+
+        it 'fails hard with exit code 1 and does not steal' do
+          expect(queue).not_to receive(:steal)
+          expect(queue).not_to receive(:read_all)
+
+          exit_code = worker.run
+
+          expect(exit_code).to eq(1)
+        end
+
+        it 'prints a clear "no rerun key configured" error message' do
+          worker.run
+
+          expect(output.string).to include('ERROR')
+          expect(output.string).to include('no rerun key is configured')
+          expect(output.string).to include('Cannot replay')
+        end
+      end
+    end
+
+    context 'nil rerun key with --rerun (direct construction)' do
+      subject(:worker) do
+        described_class.new(
+          key: key,
+          batch_size: 2,
+          rspec_opts: [],
+          key_rerun: nil,
+          rerun: true,
+          queue: queue,
+          output: output
+        )
+      end
+
+      it 'crashes rather than silently running everything' do
+        expect(queue).not_to receive(:steal)
+        expect(queue).not_to receive(:read_all)
+
+        exit_code = worker.run
+
+        expect(exit_code).to eq(1)
+      end
+
+      it 'prints a clear "no rerun key configured" error message' do
+        worker.run
+
+        expect(output.string).to include('ERROR')
+        expect(output.string).to include('no rerun key is configured')
+        expect(output.string).to include('Cannot replay')
+      end
+    end
+
     context 'failed key recording (key_failed set)' do
       let(:key_failed) { 'pr-123-run-456-failed' }
 
@@ -470,6 +556,40 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'does not push to any failed key even when batches fail' do
+        expect(queue).to receive(:steal).with(key, 2)
+                                        .and_return(['spec/a_spec.rb'])
+        expect(queue).to receive(:steal).with(key, 2).and_return([])
+        expect(queue).not_to receive(:push)
+
+        worker.run
+      end
+    end
+
+    context 'empty failed key name (truthiness guard)' do
+      let(:mock_adapter) do
+        adapter = double('Adapter')
+        allow(adapter).to receive(:setup)
+        allow(adapter).to receive(:teardown)
+        allow(adapter).to receive(:run_batch).and_return(
+          Specbandit::BatchResult.new(batch_num: 1, files: ['spec/a_spec.rb'],
+                                      exit_code: 1, duration: 1.0)
+        )
+        adapter
+      end
+
+      subject(:worker) do
+        described_class.new(
+          key: key,
+          batch_size: 2,
+          adapter: mock_adapter,
+          key_rerun: nil,
+          key_failed: '',
+          queue: queue,
+          output: output
+        )
+      end
+
+      it 'does not push failed files to an empty key name' do
         expect(queue).to receive(:steal).with(key, 2)
                                         .and_return(['spec/a_spec.rb'])
         expect(queue).to receive(:steal).with(key, 2).and_return([])

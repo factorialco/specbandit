@@ -57,21 +57,7 @@ module Specbandit
       @run_start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       adapter.setup
 
-      exit_code = if key_rerun
-                    rerun_files = queue.read_all(key_rerun)
-                    if rerun_files.any?
-                      run_replay(rerun_files)
-                    elsif rerun
-                      output.puts "[specbandit] ERROR: --rerun flag is set but rerun key '#{key_rerun}' is empty."
-                      output.puts '[specbandit] The rerun key may have expired (TTL) or Redis was flushed.'
-                      output.puts '[specbandit] Cannot replay — failing to prevent silent false pass.'
-                      1
-                    else
-                      run_steal(record: true)
-                    end
-                  else
-                    run_steal(record: false)
-                  end
+      exit_code = determine_exit_code
 
       print_summary if @batch_results.any?
       merge_json_results
@@ -82,6 +68,43 @@ module Specbandit
     end
 
     private
+
+    # Decide the operating mode and execute it, returning the exit code.
+    # - no usable rerun key → steal mode (or crash if --rerun was requested)
+    # - rerun key has data  → replay mode
+    # - rerun key but empty → record mode (or crash if --rerun was requested)
+    def determine_exit_code
+      unless key_present?(key_rerun)
+        return fail_stale_rerun if rerun
+
+        return run_steal(record: false)
+      end
+
+      rerun_files = queue.read_all(key_rerun)
+      return run_replay(rerun_files) if rerun_files.any?
+      return fail_stale_rerun if rerun
+
+      run_steal(record: true)
+    end
+
+    # A Redis key name is usable only when it is a non-nil, non-empty string.
+    # Guards the Ruby gotcha where "" is truthy (e.g. --key-rerun "$UNSET_VAR"),
+    # which would otherwise read/write against an empty key name.
+    def key_present?(value)
+      !value.nil? && !value.empty?
+    end
+
+    # Emit the stale/missing-rerun error and return exit code 1.
+    def fail_stale_rerun
+      if key_present?(key_rerun)
+        output.puts "[specbandit] ERROR: --rerun flag is set but rerun key '#{key_rerun}' is empty."
+      else
+        output.puts '[specbandit] ERROR: --rerun flag is set but no rerun key is configured.'
+      end
+      output.puts '[specbandit] The rerun key may have expired (TTL) or Redis was flushed.'
+      output.puts '[specbandit] Cannot replay — failing to prevent silent false pass.'
+      1
+    end
 
     # Replay mode: run a known list of files in local batches.
     # Used when re-running a failed CI job -- the rerun key already
@@ -171,7 +194,7 @@ module Specbandit
     # paths are recorded (not the entire batch). For CLI adapter batches
     # (no per-file granularity), the whole batch is recorded as fallback.
     def record_failed_files(files, result)
-      return unless key_failed
+      return unless key_present?(key_failed)
       return if result.exit_code.zero?
 
       failed_files = extract_failed_files(result) || files
