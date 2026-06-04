@@ -241,6 +241,22 @@ RSpec.describe Specbandit::Configuration do
       )
     end
 
+    it 'raises when rerun is set with an empty key_rerun' do
+      config.key = 'valid-key'
+      config.rerun = true
+      config.key_rerun = ''
+      expect { config.validate! }.to raise_error(
+        Specbandit::Error, /--rerun requires --key-rerun to be set/
+      )
+    end
+
+    it 'passes when rerun is set with a valid key_rerun' do
+      config.key = 'valid-key'
+      config.rerun = true
+      config.key_rerun = 'pr-42-runner-3'
+      expect { config.validate! }.not_to raise_error
+    end
+
     it 'passes when key and batch_size are valid' do
       config.key = 'valid-key'
       config.batch_size = 3
