@@ -5,7 +5,8 @@ module Specbandit
     attr_accessor :redis_url, :batch_size, :key, :rspec_opts, :key_ttl,
                   :key_rerun, :key_rerun_ttl, :rerun, :verbose,
                   :adapter, :command, :command_opts,
-                  :key_failed, :key_failed_ttl, :report
+                  :key_failed, :key_failed_ttl, :report,
+                  :fallback_pattern, :node_index, :node_total
 
     DEFAULT_REDIS_URL = 'redis://localhost:6379'
     DEFAULT_BATCH_SIZE = 5
@@ -30,6 +31,9 @@ module Specbandit
       @key_failed = ENV.fetch('SPECBANDIT_KEY_FAILED', nil)
       @key_failed_ttl = Integer(ENV.fetch('SPECBANDIT_KEY_FAILED_TTL', DEFAULT_KEY_FAILED_TTL))
       @report = ENV.fetch('SPECBANDIT_REPORT', nil)
+      @fallback_pattern = ENV.fetch('SPECBANDIT_FALLBACK_PATTERN', nil)
+      @node_index = parse_optional_int(ENV['SPECBANDIT_NODE_INDEX'] || ENV.fetch('CI_NODE_INDEX', nil))
+      @node_total = parse_optional_int(ENV['SPECBANDIT_NODE_TOTAL'] || ENV.fetch('CI_NODE_TOTAL', nil))
     end
 
     def validate!
@@ -39,9 +43,25 @@ module Specbandit
       raise Error, 'key_rerun_ttl must be a positive integer' unless key_rerun_ttl.positive?
       raise Error, 'key_failed_ttl must be a positive integer' unless key_failed_ttl.positive?
       raise Error, '--rerun requires --key-rerun to be set' if rerun && (key_rerun.nil? || key_rerun.empty?)
+      validate_fallback! if fallback_pattern && !fallback_pattern.empty?
     end
 
     private
+
+    def validate_fallback!
+      if node_total.nil? || node_index.nil?
+        raise Error, 'fallback requires node index/total (set --node-index/--node-total, ' \
+                     'SPECBANDIT_NODE_INDEX/SPECBANDIT_NODE_TOTAL or CI_NODE_INDEX/CI_NODE_TOTAL)'
+      end
+      raise Error, 'node_total must be a positive integer' unless node_total.positive?
+      raise Error, 'node_index must be in 0...node_total' unless node_index >= 0 && node_index < node_total
+    end
+
+    def parse_optional_int(value)
+      return nil if value.nil? || value.empty?
+
+      Integer(value)
+    end
 
     def parse_rspec_opts(opts)
       return [] if opts.nil? || opts.empty?

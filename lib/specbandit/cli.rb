@@ -139,6 +139,19 @@ module Specbandit
           Specbandit.configuration.report = v
         end
 
+        opts.on('--fallback-pattern PATTERN',
+                'Glob pattern enabling static-split fallback when Redis is unreachable') do |v|
+          Specbandit.configuration.fallback_pattern = v
+        end
+
+        opts.on('--node-index N', Integer, 'This node index for fallback split (default: CI_NODE_INDEX)') do |v|
+          Specbandit.configuration.node_index = v
+        end
+
+        opts.on('--node-total N', Integer, 'Total nodes for fallback split (default: CI_NODE_TOTAL)') do |v|
+          Specbandit.configuration.node_total = v
+        end
+
         opts.on('--verbose', 'Show per-batch file list and full command output (default: quiet)') do
           Specbandit.configuration.verbose = true
         end
@@ -225,6 +238,9 @@ module Specbandit
            --key-failed-ttl N     TTL for failed key (default: 604800 / 1 week)
            --rerun                Signal this is a re-run (fail hard if rerun key is empty)
           --report FILE          Write JSON report to FILE after run
+          --fallback-pattern P   Glob pattern enabling static-split fallback when Redis is unreachable
+          --node-index N         This node index for the fallback split (default: CI_NODE_INDEX)
+          --node-total N         Total nodes for the fallback split (default: CI_NODE_TOTAL)
           --verbose              Show per-batch file list and full command output
 
           Arguments after -- are forwarded to the adapter (rspec opts, command opts, etc.).
@@ -246,6 +262,9 @@ module Specbandit
           SPECBANDIT_RERUN            Signal re-run mode (1/true/yes)
           SPECBANDIT_VERBOSE          Enable verbose output (1/true/yes)
           SPECBANDIT_REPORT           Path to write JSON report file
+          SPECBANDIT_FALLBACK_PATTERN Glob pattern enabling static-split fallback on Redis outage
+          SPECBANDIT_NODE_INDEX       Node index for the fallback split (falls back to CI_NODE_INDEX)
+          SPECBANDIT_NODE_TOTAL       Total nodes for the fallback split (falls back to CI_NODE_TOTAL)
 
         File input priority for push:
           1. stdin (piped)     echo "spec/a_spec.rb" | specbandit push --key KEY

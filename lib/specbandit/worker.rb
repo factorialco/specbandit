@@ -5,7 +5,7 @@ require 'json'
 module Specbandit
   class Worker
     attr_reader :queue, :key, :batch_size, :adapter, :key_rerun, :key_rerun_ttl, :key_failed, :key_failed_ttl, :rerun,
-                :output, :verbose, :report
+                :output, :verbose, :report, :fallback_pattern, :node_index, :node_total
 
     def initialize(
       key: Specbandit.configuration.key,
@@ -18,6 +18,9 @@ module Specbandit
       rerun: Specbandit.configuration.rerun,
       verbose: Specbandit.configuration.verbose,
       report: Specbandit.configuration.report,
+      fallback_pattern: Specbandit.configuration.fallback_pattern,
+      node_index: Specbandit.configuration.node_index,
+      node_total: Specbandit.configuration.node_total,
       queue: nil,
       output: $stdout,
       # Legacy parameter for backward compatibility.
@@ -33,6 +36,10 @@ module Specbandit
       @rerun = rerun
       @verbose = verbose
       @report = report
+      @fallback_pattern = fallback_pattern
+      @node_index = node_index
+      @node_total = node_total
+      @fallback_active = false
       @queue = queue || RedisQueue.new
       @output = output
       @batch_results = []
@@ -80,7 +87,17 @@ module Specbandit
         return run_steal(record: false)
       end
 
-      rerun_files = queue.read_all(key_rerun)
+      begin
+        rerun_files = queue.read_all(key_rerun)
+      rescue Redis::BaseConnectionError => e
+        # Replay integrity cannot be guaranteed without the recorded file list:
+        # a static slice may differ from what this runner originally executed,
+        # so an explicit re-run must still fail hard.
+        raise if rerun || !fallback_enabled?
+
+        return enter_fallback(e, prior_failed: false)
+      end
+
       return run_replay(rerun_files) if rerun_files.any?
       return fail_stale_rerun if rerun
 
@@ -151,15 +168,30 @@ module Specbandit
       batch_num = 0
 
       loop do
-        files = queue.steal(key, batch_size)
+        begin
+          files = queue.steal(key, batch_size)
+        rescue Redis::BaseConnectionError => e
+          raise unless fallback_enabled?
+
+          return enter_fallback(e, prior_failed: failed)
+        end
 
         if files.empty?
           output.puts '[specbandit] Queue exhausted. No more files to run.' if verbose
           break
         end
 
-        # Record the stolen batch so this runner can replay on re-run
-        queue.push(key_rerun, files, ttl: key_rerun_ttl) if record
+        # Record the stolen batch so this runner can replay on re-run.
+        # Best-effort when fallback is enabled: losing rerun bookkeeping is
+        # better than losing the whole shard, and if Redis is really down the
+        # next steal will trigger the fallback anyway.
+        begin
+          queue.push(key_rerun, files, ttl: key_rerun_ttl) if record
+        rescue Redis::BaseConnectionError => e
+          raise unless fallback_enabled?
+
+          output.puts "[specbandit] WARNING: could not record rerun batch (#{e.message}). Continuing."
+        end
 
         batch_num += 1
         output.puts "[specbandit] Batch ##{batch_num}: running #{files.size} files" if verbose
@@ -186,6 +218,48 @@ module Specbandit
       failed ? 1 : 0
     end
 
+    # Fallback is opt-in: it requires a glob pattern plus the node index/total
+    # of this runner (validated in Configuration#validate!).
+    def fallback_enabled?
+      !fallback_pattern.nil? && !fallback_pattern.empty? && !node_index.nil? && !node_total.nil?
+    end
+
+    # Redis is unreachable: degrade to a deterministic static split instead of
+    # failing the shard. Every file belongs to exactly one node's slice, so the
+    # union over all nodes covers the whole suite even when some nodes already
+    # stole batches from the queue (duplicates are possible, misses are not).
+    def enter_fallback(error, prior_failed:)
+      @fallback_active = true
+      output.puts "[specbandit] WARNING: Redis unreachable (#{error.message})."
+      output.puts "[specbandit] Falling back to static split: node #{node_index + 1}/#{node_total} " \
+                  "of '#{fallback_pattern}'."
+
+      files = fallback_files
+      if files.nil?
+        output.puts "[specbandit] ERROR: fallback pattern '#{fallback_pattern}' matched no files. " \
+                    'Refusing to silently skip the suite.'
+        return 1
+      end
+
+      already_run = @batch_results.flat_map(&:files)
+      remaining = files - already_run
+      output.puts "[specbandit] Fallback slice: #{files.size} files, #{remaining.size} not yet run by this node."
+
+      fallback_exit = run_replay(remaining)
+      (prior_failed || fallback_exit != 0) ? 1 : 0
+    end
+
+    # This node's slice of the suite: glob, sort for determinism across nodes,
+    # then take every node_total-th file starting at node_index.
+    # Returns nil when the pattern matches nothing (a misconfigured pattern
+    # must not be mistaken for an empty suite).
+    def fallback_files
+      all_files = Dir.glob(fallback_pattern).sort
+      return nil if all_files.empty?
+
+      all_files.each_slice(node_total).flat_map { |group| group[node_index] ? [group[node_index]] : [] }
+    end
+
     # Record failed files to the failed key in Redis for later review.
     # Called after each batch; only pushes when key_failed is configured
     # and the batch had a non-zero exit code.
@@ -199,6 +273,13 @@ module Specbandit
 
       failed_files = extract_failed_files(result) || files
       return if failed_files.empty?
+
+      # In fallback mode Redis is known to be down: skip the write instead of
+      # crashing. Failed files still reach the local JSON report.
+      if @fallback_active
+        output.puts "[specbandit] Skipping failed-files Redis write (fallback mode): #{failed_files.size} files."
+        return
+      end
 
       queue.push(key_failed, failed_files, ttl: key_failed_ttl)
     end

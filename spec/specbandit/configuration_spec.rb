@@ -79,7 +79,12 @@ RSpec.describe Specbandit::Configuration do
         'SPECBANDIT_COMMAND_OPTS',
         'SPECBANDIT_KEY_FAILED',
         'SPECBANDIT_KEY_FAILED_TTL',
-        'SPECBANDIT_REPORT'
+        'SPECBANDIT_REPORT',
+        'SPECBANDIT_FALLBACK_PATTERN',
+        'SPECBANDIT_NODE_INDEX',
+        'SPECBANDIT_NODE_TOTAL',
+        'CI_NODE_INDEX',
+        'CI_NODE_TOTAL'
       )
       example.run
     ensure
@@ -97,6 +102,11 @@ RSpec.describe Specbandit::Configuration do
       ENV.delete('SPECBANDIT_KEY_FAILED')
       ENV.delete('SPECBANDIT_KEY_FAILED_TTL')
       ENV.delete('SPECBANDIT_REPORT')
+      ENV.delete('SPECBANDIT_FALLBACK_PATTERN')
+      ENV.delete('SPECBANDIT_NODE_INDEX')
+      ENV.delete('SPECBANDIT_NODE_TOTAL')
+      ENV.delete('CI_NODE_INDEX')
+      ENV.delete('CI_NODE_TOTAL')
       original_env.each { |k, v| ENV[k] = v }
     end
 
@@ -183,6 +193,35 @@ RSpec.describe Specbandit::Configuration do
       config = described_class.new
       expect(config.report).to eq('/tmp/report.json')
     end
+
+    it 'reads fallback_pattern from SPECBANDIT_FALLBACK_PATTERN' do
+      ENV['SPECBANDIT_FALLBACK_PATTERN'] = 'spec/**/*_spec.rb'
+      config = described_class.new
+      expect(config.fallback_pattern).to eq('spec/**/*_spec.rb')
+    end
+
+    it 'reads node index/total from SPECBANDIT_NODE_INDEX/SPECBANDIT_NODE_TOTAL' do
+      ENV['SPECBANDIT_NODE_INDEX'] = '3'
+      ENV['SPECBANDIT_NODE_TOTAL'] = '16'
+      config = described_class.new
+      expect(config.node_index).to eq(3)
+      expect(config.node_total).to eq(16)
+    end
+
+    it 'falls back to CI_NODE_INDEX/CI_NODE_TOTAL' do
+      ENV['CI_NODE_INDEX'] = '5'
+      ENV['CI_NODE_TOTAL'] = '8'
+      config = described_class.new
+      expect(config.node_index).to eq(5)
+      expect(config.node_total).to eq(8)
+    end
+
+    it 'prefers SPECBANDIT_NODE_* over CI_NODE_*' do
+      ENV['SPECBANDIT_NODE_INDEX'] = '1'
+      ENV['CI_NODE_INDEX'] = '7'
+      config = described_class.new
+      expect(config.node_index).to eq(1)
+    end
   end
 
   describe '#validate!' do
@@ -261,6 +300,48 @@ RSpec.describe Specbandit::Configuration do
       config.key = 'valid-key'
       config.batch_size = 3
       expect { config.validate! }.not_to raise_error
+    end
+
+    context 'fallback options' do
+      before do
+        config.key = 'valid-key'
+        config.fallback_pattern = 'spec/**/*_spec.rb'
+        config.node_index = 0
+        config.node_total = 4
+      end
+
+      it 'passes with a pattern and valid node index/total' do
+        expect { config.validate! }.not_to raise_error
+      end
+
+      it 'raises when node index/total are missing' do
+        config.node_index = nil
+        config.node_total = nil
+        expect { config.validate! }.to raise_error(
+          Specbandit::Error, /fallback requires node index\/total/
+        )
+      end
+
+      it 'raises when node_total is not positive' do
+        config.node_total = 0
+        expect { config.validate! }.to raise_error(
+          Specbandit::Error, /node_index must be in 0\.\.\.node_total|node_total must be a positive integer/
+        )
+      end
+
+      it 'raises when node_index is out of range' do
+        config.node_index = 4
+        expect { config.validate! }.to raise_error(
+          Specbandit::Error, /node_index must be in 0\.\.\.node_total/
+        )
+      end
+
+      it 'does not validate node settings when no fallback pattern is set' do
+        config.fallback_pattern = nil
+        config.node_index = nil
+        config.node_total = nil
+        expect { config.validate! }.not_to raise_error
+      end
     end
   end
 end

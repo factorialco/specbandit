@@ -1120,4 +1120,191 @@ RSpec.describe Specbandit::Worker do
       end
     end
   end
+
+  describe 'static-split fallback on Redis outage' do
+    let(:mock_adapter) do
+      adapter = double('Adapter')
+      allow(adapter).to receive(:setup)
+      allow(adapter).to receive(:teardown)
+      allow(adapter).to receive(:run_batch) do |files, batch_num|
+        Specbandit::BatchResult.new(batch_num: batch_num, files: files, exit_code: 0, duration: 1.0)
+      end
+      adapter
+    end
+
+    let(:tmpdir) { Dir.mktmpdir }
+    let(:pattern) { File.join(tmpdir, '*_spec.rb') }
+    let(:all_files) do
+      %w[a b c d e].map do |name|
+        path = File.join(tmpdir, "#{name}_spec.rb")
+        File.write(path, '')
+        path
+      end.sort
+    end
+
+    after { FileUtils.remove_entry(tmpdir) }
+
+    def build_worker(node_index:, node_total: 2, key_rerun: nil, rerun: false, key_failed: nil)
+      described_class.new(
+        key: key,
+        batch_size: 2,
+        adapter: mock_adapter,
+        key_rerun: key_rerun,
+        key_failed: key_failed,
+        rerun: rerun,
+        queue: queue,
+        output: output,
+        fallback_pattern: pattern,
+        node_index: node_index,
+        node_total: node_total
+      )
+    end
+
+    def ran_files
+      files = []
+      allow(mock_adapter).to receive(:run_batch) do |batch, batch_num|
+        files.concat(batch)
+        Specbandit::BatchResult.new(batch_num: batch_num, files: batch, exit_code: 0, duration: 1.0)
+      end
+      files
+    end
+
+    context 'when fallback is not configured' do
+      it 'propagates the connection error (current behavior)' do
+        worker = described_class.new(
+          key: key, batch_size: 2, adapter: mock_adapter,
+          key_rerun: nil, queue: queue, output: output
+        )
+        expect(queue).to receive(:steal).and_raise(Redis::CannotConnectError, 'down')
+
+        expect { worker.run }.to raise_error(Redis::CannotConnectError)
+      end
+    end
+
+    context 'when Redis is down from the start' do
+      it 'runs only this node slice and exits 0' do
+        all_files
+        executed = ran_files
+        expect(queue).to receive(:steal).and_raise(Redis::CannotConnectError, 'down')
+
+        exit_code = build_worker(node_index: 0).run
+
+        expect(exit_code).to eq(0)
+        expect(executed).to eq([all_files[0], all_files[2], all_files[4]])
+        expect(output.string).to include('Falling back to static split')
+      end
+
+      it 'produces disjoint, exhaustive slices across nodes' do
+        all_files
+        slices = [0, 1].map do |index|
+          executed = ran_files
+          allow(queue).to receive(:steal).and_raise(Redis::CannotConnectError, 'down')
+          build_worker(node_index: index).run
+          executed.dup
+        end
+
+        expect(slices[0] & slices[1]).to be_empty
+        expect((slices[0] + slices[1]).sort).to eq(all_files)
+      end
+    end
+
+    context 'when Redis dies mid-run' do
+      it 'skips files this node already ran and preserves earlier failures' do
+        all_files
+        calls = 0
+        allow(queue).to receive(:steal) do
+          calls += 1
+          raise Redis::CannotConnectError, 'down' if calls > 1
+
+          [all_files[0]]
+        end
+
+        executed = []
+        allow(mock_adapter).to receive(:run_batch) do |batch, batch_num|
+          executed.concat(batch)
+          # The first (stolen) batch fails; fallback batches pass.
+          code = batch_num == 1 ? 1 : 0
+          Specbandit::BatchResult.new(batch_num: batch_num, files: batch, exit_code: code, duration: 1.0)
+        end
+
+        exit_code = build_worker(node_index: 0).run
+
+        expect(exit_code).to eq(1)
+        expect(executed).to eq([all_files[0], all_files[2], all_files[4]])
+      end
+    end
+
+    context 'when the fallback pattern matches no files' do
+      it 'fails instead of silently skipping the suite' do
+        expect(queue).to receive(:steal).and_raise(Redis::CannotConnectError, 'down')
+
+        worker = described_class.new(
+          key: key, batch_size: 2, adapter: mock_adapter,
+          key_rerun: nil, queue: queue, output: output,
+          fallback_pattern: File.join(tmpdir, 'nothing', '*_spec.rb'),
+          node_index: 0, node_total: 2
+        )
+
+        expect(worker.run).to eq(1)
+        expect(output.string).to include('matched no files')
+      end
+    end
+
+    context 'when reading the rerun key fails' do
+      it 'falls back in record mode' do
+        all_files
+        executed = ran_files
+        expect(queue).to receive(:read_all).and_raise(Redis::CannotConnectError, 'down')
+
+        exit_code = build_worker(node_index: 1, key_rerun: 'rerun-key').run
+
+        expect(exit_code).to eq(0)
+        expect(executed).to eq([all_files[1], all_files[3]])
+      end
+
+      it 'still fails hard on an explicit --rerun (replay integrity)' do
+        expect(queue).to receive(:read_all).and_raise(Redis::CannotConnectError, 'down')
+
+        worker = build_worker(node_index: 0, key_rerun: 'rerun-key', rerun: true)
+
+        expect { worker.run }.to raise_error(Redis::CannotConnectError)
+      end
+    end
+
+    context 'best-effort Redis writes in fallback mode' do
+      it 'continues when recording the rerun batch fails' do
+        all_files
+        executed = ran_files
+        calls = 0
+        allow(queue).to receive(:read_all).and_return([])
+        allow(queue).to receive(:steal) do
+          calls += 1
+          raise Redis::CannotConnectError, 'down' if calls > 1
+
+          [all_files[0]]
+        end
+        allow(queue).to receive(:push).and_raise(Redis::CannotConnectError, 'down')
+
+        exit_code = build_worker(node_index: 0, key_rerun: 'rerun-key').run
+
+        expect(exit_code).to eq(0)
+        expect(executed).to eq([all_files[0], all_files[2], all_files[4]])
+        expect(output.string).to include('could not record rerun batch')
+      end
+
+      it 'does not write failed files to Redis while in fallback' do
+        all_files
+        allow(queue).to receive(:steal).and_raise(Redis::CannotConnectError, 'down')
+        allow(mock_adapter).to receive(:run_batch) do |batch, batch_num|
+          Specbandit::BatchResult.new(batch_num: batch_num, files: batch, exit_code: 1, duration: 1.0)
+        end
+        expect(queue).not_to receive(:push)
+
+        exit_code = build_worker(node_index: 0, key_failed: 'failed-key').run
+
+        expect(exit_code).to eq(1)
+        expect(output.string).to include('Skipping failed-files Redis write')
+      end
+    end
+  end
 end
