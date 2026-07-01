@@ -3,15 +3,17 @@
 module Specbandit
   class Configuration
     attr_accessor :redis_url, :batch_size, :key, :rspec_opts, :key_ttl,
-                  :key_rerun, :key_rerun_ttl, :rerun, :verbose,
+                  :key_rerun, :verbose,
                   :adapter, :command, :command_opts,
-                  :key_failed, :key_failed_ttl, :report
+                  :key_failed, :report
 
     DEFAULT_REDIS_URL = 'redis://localhost:6379'
     DEFAULT_BATCH_SIZE = 5
-    DEFAULT_KEY_TTL = 21_600 # 6 hours in seconds
-    DEFAULT_KEY_RERUN_TTL = 604_800 # 1 week in seconds
-    DEFAULT_KEY_FAILED_TTL = 604_800 # 1 week in seconds
+    # A single TTL governs every key specbandit writes: the shared queue, its
+    # published marker, the per-runner rerun key and the failed key. It defaults
+    # to 1 week because re-runs can happen hours or days after the original run,
+    # and the rerun key + published marker must still be alive when they do.
+    DEFAULT_KEY_TTL = 604_800 # 1 week in seconds
     DEFAULT_ADAPTER = 'cli'
 
     def initialize
@@ -21,14 +23,11 @@ module Specbandit
       @rspec_opts = parse_rspec_opts(ENV.fetch('SPECBANDIT_RSPEC_OPTS', nil))
       @key_ttl = Integer(ENV.fetch('SPECBANDIT_KEY_TTL', DEFAULT_KEY_TTL))
       @key_rerun = ENV.fetch('SPECBANDIT_KEY_RERUN', nil)
-      @key_rerun_ttl = Integer(ENV.fetch('SPECBANDIT_KEY_RERUN_TTL', DEFAULT_KEY_RERUN_TTL))
-      @rerun = env_truthy?('SPECBANDIT_RERUN')
       @verbose = env_truthy?('SPECBANDIT_VERBOSE')
       @adapter = ENV.fetch('SPECBANDIT_ADAPTER', DEFAULT_ADAPTER)
       @command = ENV.fetch('SPECBANDIT_COMMAND', nil)
       @command_opts = parse_space_separated(ENV.fetch('SPECBANDIT_COMMAND_OPTS', nil))
       @key_failed = ENV.fetch('SPECBANDIT_KEY_FAILED', nil)
-      @key_failed_ttl = Integer(ENV.fetch('SPECBANDIT_KEY_FAILED_TTL', DEFAULT_KEY_FAILED_TTL))
       @report = ENV.fetch('SPECBANDIT_REPORT', nil)
     end
 
@@ -36,9 +35,6 @@ module Specbandit
       raise Error, 'key is required (set via --key or SPECBANDIT_KEY)' if key.nil? || key.empty?
       raise Error, 'batch_size must be a positive integer' unless batch_size.positive?
       raise Error, 'key_ttl must be a positive integer' unless key_ttl.positive?
-      raise Error, 'key_rerun_ttl must be a positive integer' unless key_rerun_ttl.positive?
-      raise Error, 'key_failed_ttl must be a positive integer' unless key_failed_ttl.positive?
-      raise Error, '--rerun requires --key-rerun to be set' if rerun && (key_rerun.nil? || key_rerun.empty?)
     end
 
     private

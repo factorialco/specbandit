@@ -45,6 +45,27 @@ module Specbandit
       with_retries { redis.llen(key) }
     end
 
+    # Mark a queue key as "published" by setting a companion marker key.
+    #
+    # The marker is a separate string key (`<key>:published`) that survives
+    # the queue list being fully drained. It is the source of truth for
+    # "was work ever pushed for this key?" -- Redis auto-deletes empty lists,
+    # so the list alone cannot distinguish "never pushed" from "drained".
+    def mark_published(key, ttl: nil)
+      with_retries do
+        if ttl
+          redis.set(published_marker(key), '1', ex: ttl)
+        else
+          redis.set(published_marker(key), '1')
+        end
+      end
+    end
+
+    # Whether a queue key has been published (its marker exists).
+    def published?(key)
+      with_retries { redis.exists?(published_marker(key)) }
+    end
+
     # Read all file paths from the list non-destructively.
     # Returns an array of file paths (empty array when key doesn't exist).
     def read_all(key)
@@ -56,6 +77,11 @@ module Specbandit
     end
 
     private
+
+    # Companion marker key name for a given queue key.
+    def published_marker(key)
+      "#{key}:published"
+    end
 
     def with_retries(attempts: MAX_ATTEMPTS)
       retries = 0

@@ -63,7 +63,7 @@ module Specbandit
           Specbandit.configuration.redis_url = v
         end
 
-        opts.on('--key-ttl SECONDS', Integer, 'TTL for the Redis key in seconds (default: 21600 / 6 hours)') do |v|
+        opts.on('--key-ttl SECONDS', Integer, 'TTL for all Redis keys in seconds (default: 604800 / 1 week)') do |v|
           Specbandit.configuration.key_ttl = v
         end
 
@@ -119,20 +119,12 @@ module Specbandit
           Specbandit.configuration.key_rerun = v
         end
 
-        opts.on('--key-rerun-ttl SECONDS', Integer, 'TTL for rerun key in seconds (default: 604800 / 1 week)') do |v|
-          Specbandit.configuration.key_rerun_ttl = v
-        end
-
         opts.on('--key-failed KEY', 'Redis key to record failed test files for later review') do |v|
           Specbandit.configuration.key_failed = v
         end
 
-        opts.on('--key-failed-ttl SECONDS', Integer, 'TTL for failed key in seconds (default: 604800 / 1 week)') do |v|
-          Specbandit.configuration.key_failed_ttl = v
-        end
-
-        opts.on('--rerun', 'Signal this is a re-run (fail hard if rerun key is empty)') do
-          Specbandit.configuration.rerun = true
+        opts.on('--key-ttl SECONDS', Integer, 'TTL for all Redis keys in seconds (default: 604800 / 1 week)') do |v|
+          Specbandit.configuration.key_ttl = v
         end
 
         opts.on('--report FILE', 'Write JSON report with run statistics to FILE') do |v|
@@ -209,7 +201,7 @@ module Specbandit
           --key KEY              Redis queue key (required, or set SPECBANDIT_KEY)
           --pattern PATTERN      Glob pattern for file discovery (e.g. 'spec/**/*_spec.rb')
           --redis-url URL        Redis URL (default: redis://localhost:6379)
-          --key-ttl SECONDS      TTL for the Redis key (default: 21600 / 6 hours)
+          --key-ttl SECONDS      TTL for all Redis keys (default: 604800 / 1 week)
 
         Work options:
           --key KEY              Redis queue key (required, or set SPECBANDIT_KEY)
@@ -219,11 +211,9 @@ module Specbandit
           --rspec-opts OPTS      Extra options forwarded to RSpec (for rspec adapter)
           --batch-size N         Files per batch (default: 5, or set SPECBANDIT_BATCH_SIZE)
           --redis-url URL        Redis URL (default: redis://localhost:6379)
-           --key-rerun KEY        Per-runner rerun key for re-run support
-           --key-rerun-ttl N      TTL for rerun key (default: 604800 / 1 week)
-           --key-failed KEY       Redis key to record failed test files
-           --key-failed-ttl N     TTL for failed key (default: 604800 / 1 week)
-           --rerun                Signal this is a re-run (fail hard if rerun key is empty)
+          --key-rerun KEY        Per-runner rerun key for re-run support
+          --key-failed KEY       Redis key to record failed test files
+          --key-ttl SECONDS      TTL for all Redis keys (default: 604800 / 1 week)
           --report FILE          Write JSON report to FILE after run
           --verbose              Show per-batch file list and full command output
 
@@ -237,13 +227,10 @@ module Specbandit
           SPECBANDIT_COMMAND          Command to run (cli adapter)
           SPECBANDIT_COMMAND_OPTS     Command options (space-separated)
           SPECBANDIT_BATCH_SIZE       Batch size
-          SPECBANDIT_KEY_TTL          Key TTL in seconds (default: 21600)
+          SPECBANDIT_KEY_TTL          TTL for all Redis keys in seconds (default: 604800)
           SPECBANDIT_RSPEC_OPTS       RSpec options (rspec adapter)
           SPECBANDIT_KEY_RERUN        Per-runner rerun key
-          SPECBANDIT_KEY_RERUN_TTL    Rerun key TTL in seconds (default: 604800)
           SPECBANDIT_KEY_FAILED       Redis key for failed test files
-          SPECBANDIT_KEY_FAILED_TTL   Failed key TTL in seconds (default: 604800)
-          SPECBANDIT_RERUN            Signal re-run mode (1/true/yes)
           SPECBANDIT_VERBOSE          Enable verbose output (1/true/yes)
           SPECBANDIT_REPORT           Path to write JSON report file
 

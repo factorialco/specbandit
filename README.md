@@ -136,7 +136,7 @@ specbandit push [options] [files...]
   --key KEY              Redis queue key (required)
   --pattern PATTERN      Glob pattern for file discovery
   --redis-url URL        Redis URL (default: redis://localhost:6379)
-  --key-ttl SECONDS      TTL for the Redis key (default: 21600 / 6 hours)
+  --key-ttl SECONDS      TTL for all Redis keys (default: 604800 / 1 week)
 
 specbandit work [options] [-- extra-opts...]
   --key KEY              Redis queue key (required)
@@ -147,8 +147,8 @@ specbandit work [options] [-- extra-opts...]
   --batch-size N         Files per batch (default: 5)
   --redis-url URL        Redis URL (default: redis://localhost:6379)
   --key-rerun KEY        Per-runner rerun key for re-run support (see below)
-  --key-rerun-ttl SECS   TTL for rerun key (default: 604800 / 1 week)
-  --rerun                Signal this is a re-run (fail if rerun key is empty)
+  --key-failed KEY       Redis key to record failed test files
+  --key-ttl SECONDS      TTL for all Redis keys (default: 604800 / 1 week)
   --verbose              Show per-batch file list and full command output
 
 Arguments after -- are forwarded to the adapter. They are merged with
@@ -167,11 +167,10 @@ All CLI options can be set via environment variables:
 | `SPECBANDIT_COMMAND` | Command to run (cli adapter) | _(none)_ |
 | `SPECBANDIT_COMMAND_OPTS` | Space-separated command options | _(none)_ |
 | `SPECBANDIT_BATCH_SIZE` | Files per steal | `5` |
-| `SPECBANDIT_KEY_TTL` | Key expiry in seconds | `21600` (6 hours) |
+| `SPECBANDIT_KEY_TTL` | Expiry (seconds) for **all** Redis keys | `604800` (1 week) |
 | `SPECBANDIT_RSPEC_OPTS` | Space-separated RSpec options (rspec adapter) | _(none)_ |
 | `SPECBANDIT_KEY_RERUN` | Per-runner rerun key | _(none)_ |
-| `SPECBANDIT_KEY_RERUN_TTL` | Rerun key expiry in seconds | `604800` (1 week) |
-| `SPECBANDIT_RERUN` | Signal re-run mode (`1`/`true`/`yes`) | _(false)_ |
+| `SPECBANDIT_KEY_FAILED` | Redis key for failed test files | _(none)_ |
 | `SPECBANDIT_VERBOSE` | Enable verbose output (`1`/`true`/`yes`) | _(false)_ |
 
 CLI flags take precedence over environment variables.
@@ -185,9 +184,8 @@ Specbandit.configure do |c|
   c.redis_url      = "redis://my-redis:6379"
   c.key            = "pr-123-run-456"
   c.batch_size     = 10
-  c.key_ttl        = 7200 # 2 hours (default: 21600 / 6 hours)
+  c.key_ttl        = 604_800 # 1 week (default) -- applies to every key specbandit writes
   c.key_rerun      = "pr-123-run-456-runner-3"
-  c.key_rerun_ttl  = 604_800 # 1 week (default)
 end
 
 # Push
@@ -289,7 +287,7 @@ When you use specbandit to distribute tests across multiple CI runners (e.g. a G
 This creates a subtle but serious problem with CI re-runs:
 
 1. **First run**: Runner #3 steals and executes files X, Y, Z. File Y fails. The shared queue is now empty (all files were consumed across all runners).
-2. **Re-run of runner #3**: GitHub Actions re-runs only the failed runner. It starts `specbandit work` again with the same `--key`, but the shared queue is already empty. Runner #3 sees nothing to do and **exits 0 -- the failing test silently passes**.
+2. **Re-run of runner #3**: GitHub Actions re-runs only the failed runner. It starts `specbandit work` again with the same `--key`, but the shared queue is already empty. Without a per-runner memory the runner would see nothing to do and exit 0 -- silently passing the failing test.
 
 This happens because GitHub Actions re-runs **reuse the same `run_id`**, so the key resolves to the same (now empty) Redis list.
 
@@ -306,33 +304,26 @@ specbandit work \
   --batch-size 10
 ```
 
-### How it works: three operating modes
+### How it works: the mode is derived from Redis, never from a flag
 
-Specbandit detects the mode automatically based on the state of `--key-rerun`:
+Specbandit decides what to do purely from the **state of Redis** -- there is no `--rerun` flag or environment variable to get wrong. Two signals drive the decision:
 
-| `--key-rerun` provided? | Rerun key in Redis | `--rerun` flag? | Mode | Behavior |
-|---|---|---|---|---|
-| No | -- | No | **Steal** | Original behavior. Steal from shared queue, run, done. |
-| Yes | Empty | No | **Record** | Steal from shared queue + record each batch to the rerun key. |
-| Yes | Has data | No/Yes | **Replay** | Ignore shared queue entirely. Re-run exactly the recorded files. |
-| Yes | Empty | Yes | **Fail** | Exit 1 with error. Prevents silent false pass on stale re-runs. |
-| No | -- | Yes | **Error** | Validation error: `--rerun` requires `--key-rerun`. |
+- **Published marker.** `specbandit push` writes a durable companion key (`<key>:published`) alongside the queue. Because Redis auto-deletes empty lists, a drained queue is indistinguishable from one that was never created -- the marker is the only reliable proof that work was ever enqueued.
+- **Rerun key.** The per-runner `--key-rerun` that records what this runner executed.
 
-> **Empty key names count as "not provided".** A `--key-rerun` whose value is an empty string -- e.g. `--key-rerun "$VAR"` where `$VAR` is unset in CI -- is treated exactly like `--key-rerun` being absent (the **No** rows above), not as a configured-but-empty key. Combined with `--rerun`, that means an empty/unset name fails hard (exit 1) rather than silently steal-and-pass. The same applies to `--key-failed`: an empty/unset name is treated as "not configured" and no failed files are recorded.
+The full decision table:
 
-#### The `--rerun` safety flag
+| Published | Shared queue (`--key`) | Rerun key (`--key-rerun`) | Behavior |
+|---|---|---|---|
+| **No** | -- | -- | **Crash** (exit 1). Nothing was ever pushed for this key (or it expired). Refuses to run rather than silently pass. |
+| Yes | Drained / empty | Empty | **OK, exit 0.** Worker arriving late -- everything was already taken by peers and this runner has no re-run memory. |
+| Yes | Has data | Empty | **Steal.** Classic run: pop batches from the shared queue (and record them to the rerun key if one is configured). |
+| Yes | Drained / empty | Has data | **Replay.** Classic re-run: ignore the shared queue and re-run exactly the recorded files. |
+| Yes | Has data | Has data | **Crash** (exit 1). Inconsistent state -- refuses to run to avoid double-executing. |
 
-Without `--rerun`, specbandit cannot distinguish a first run from a re-run when the rerun key is empty (e.g., TTL expired or Redis was flushed). In that case it silently falls back to Record mode, which may find an empty shared queue and exit 0 with zero tests -- a **silent false pass**.
+> **Empty key names count as "not provided".** A `--key-rerun` whose value is an empty string -- e.g. `--key-rerun "$VAR"` where `$VAR` is unset in CI -- is treated exactly like `--key-rerun` being absent. The same applies to `--key-failed`: an empty/unset name is treated as "not configured" and no failed files are recorded.
 
-The `--rerun` flag tells specbandit "this is definitely a re-run". If the rerun key is empty, it fails hard with exit code 1 and a clear error message instead of silently passing.
-
-Set it on re-run attempts using your CI's run attempt counter:
-
-```yaml
-# GitHub Actions: github.run_attempt is "1" on first run, "2"+ on re-runs
-env:
-  SPECBANDIT_RERUN: ${{ github.run_attempt != '1' && '1' || '' }}
-```
+> **The published marker replaces the old `--rerun` flag.** Earlier versions used a `--rerun` / `SPECBANDIT_RERUN` flag (driven by `github.run_attempt`) to decide whether to fail on an empty rerun key. That flag is gone: the marker lets specbandit tell "never pushed" (crash) apart from "drained, arriving late" (exit 0) without any CI-provided hint. Drop `--rerun` / `SPECBANDIT_RERUN` from your config.
 
 **On first run**, the rerun key doesn't exist yet (empty), so specbandit enters **record mode**:
 
@@ -394,11 +385,10 @@ jobs:
             --key-rerun "pr-${{ github.event.number }}-${{ github.run_id }}-runner-${{ matrix.runner }}" \
             --redis-url "${{ secrets.REDIS_URL }}" \
             --adapter rspec \
-            --batch-size 10 \
-            ${{ github.run_attempt != '1' && '--rerun' || '' }}
+            --batch-size 10
 ```
 
-The only difference from the basic example is the addition of `--key-rerun` and `--rerun`. The key structure:
+The only difference from the basic example is the addition of `--key-rerun` (no re-run flag needed -- the mode is derived from Redis). The key structure:
 
 - `--key` = `pr-42-run-100` -- **shared** across all 4 runners, same on re-run (because `run_id` is reused)
 - `--key-rerun` = `pr-42-run-100-runner-3` -- **unique per runner**, same on re-run
@@ -422,27 +412,24 @@ The only difference from the basic example is the addition of `--key-rerun` and 
 
 Runners 1, 2, 4 are not started at all.
 
-### Rerun key TTL
+### Key TTL
 
-The rerun key defaults to a **1 week TTL** (`604800` seconds). This is intentionally longer than the shared queue TTL (6 hours) because re-runs can happen hours or even days after the original CI run.
+A **single** TTL governs every key specbandit writes -- the shared queue, its published marker, the per-runner rerun key, and the failed key. It defaults to **1 week** (`604800` seconds), long enough that re-runs happening hours or even days after the original CI run still find their rerun key and published marker alive.
 
-Override via `--key-rerun-ttl` or `SPECBANDIT_KEY_RERUN_TTL`:
+Override via `--key-ttl` or `SPECBANDIT_KEY_TTL` (set it on `push`, which is where the queue and its marker are created):
 
 ```bash
-# Set rerun key to expire after 3 days
-specbandit work \
-  --key "pr-42-run-100" \
-  --key-rerun "pr-42-run-100-runner-3" \
-  --key-rerun-ttl 259200
+# Everything expires after 3 days
+specbandit push --key "pr-42-run-100" --key-ttl 259200 --pattern 'spec/**/*_spec.rb'
 ```
 
 ## How it works
 
-- **Push** uses `RPUSH` to append all file paths to a Redis list in a single command, then sets `EXPIRE` on the key (default: 6 hours) to ensure stale queues are automatically cleaned up.
+- **Push** uses `RPUSH` to append all file paths to a Redis list in a single command, sets `EXPIRE` on the key, and writes a durable `<key>:published` marker (with the same TTL). Empty Redis lists are auto-deleted, so this marker is what lets `work` tell "never pushed" (crash) apart from "drained, arriving late" (exit 0).
 - **Steal** uses `LPOP key count` (Redis 6.2+), which atomically pops up to N elements. No Lua scripts, no locks, no race conditions.
-- **Record** (when `--key-rerun` is set): after each steal, the batch is also `RPUSH`ed to the per-runner rerun key with its own TTL (default: 1 week).
-- **Replay** (when `--key-rerun` has data): reads all files from the rerun key via `LRANGE` (non-destructive), splits into batches, and runs them locally. The shared queue is never touched.
-- **Rerun safety** (when `--rerun` is set): if the rerun key is empty, specbandit exits 1 immediately instead of falling through to record mode. This prevents silent false passes when the rerun key TTL has expired or Redis was flushed.
+- **Record** (when `--key-rerun` is set): after each steal, the batch is also `RPUSH`ed to the per-runner rerun key.
+- **Replay** (when the rerun key has data and the shared queue is drained): reads all files from the rerun key via `LRANGE` (non-destructive), splits into batches, and runs them locally. The shared queue is never touched.
+- **Mode selection** is derived entirely from Redis (published marker + queue/rerun state) -- see the decision table above. There is no re-run flag or environment variable.
 - **Run** delegates to the configured adapter:
   - **CLI adapter**: spawns a shell command per batch via `Open3`, appending file paths as arguments. Works with any test runner.
   - **RSpec adapter**: uses `RSpec::Core::Runner.run` in-process with `RSpec.clear_examples` between batches to reset example state while preserving configuration. No subprocess forking overhead.

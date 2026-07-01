@@ -27,6 +27,11 @@ module Specbandit
       end
 
       queue.push(key, resolved, ttl: key_ttl)
+      # Record a durable "published" marker so workers can tell a drained
+      # queue ("worker arriving late", OK) apart from one that was never
+      # pushed ("you didn't push work", crash). Redis auto-deletes empty
+      # lists, so the list itself cannot carry this signal.
+      queue.mark_published(key, ttl: key_ttl)
       output.puts "[specbandit] Enqueued #{resolved.size} files onto key '#{key}' (TTL: #{key_ttl}s)."
       resolved.size
     end

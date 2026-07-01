@@ -74,6 +74,34 @@ RSpec.describe Specbandit::RedisQueue do
     end
   end
 
+  describe '#mark_published' do
+    it 'sets the companion marker key with SET and an expiry when ttl is given' do
+      expect(redis_double).to receive(:set).with('my-key:published', '1', ex: 3600)
+
+      queue.mark_published('my-key', ttl: 3600)
+    end
+
+    it 'sets the marker without an expiry when ttl is nil' do
+      expect(redis_double).to receive(:set).with('my-key:published', '1')
+
+      queue.mark_published('my-key')
+    end
+  end
+
+  describe '#published?' do
+    it 'returns true when the marker key exists' do
+      expect(redis_double).to receive(:exists?).with('my-key:published').and_return(true)
+
+      expect(queue.published?('my-key')).to be true
+    end
+
+    it 'returns false when the marker key is absent' do
+      expect(redis_double).to receive(:exists?).with('my-key:published').and_return(false)
+
+      expect(queue.published?('my-key')).to be false
+    end
+  end
+
   describe '#read_all' do
     it 'returns all elements via LRANGE non-destructively' do
       files = ['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb']
