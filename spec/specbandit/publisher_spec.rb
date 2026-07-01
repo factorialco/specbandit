@@ -34,7 +34,7 @@ RSpec.describe Specbandit::Publisher do
 
       publisher.publish(files: files)
 
-      expect(output.string).to match(/Redis latency: push \d+\.\d+ms, publish-marker \d+\.\d+ms/)
+      expect(output.string).to match(/Redis latency: push \d+\.\d+ms, mark published \d+\.\d+ms\./)
     end
   end
 

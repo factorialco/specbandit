@@ -34,8 +34,7 @@ module Specbandit
       mark_ms = measure { queue.mark_published(key, ttl: key_ttl) }
 
       output.puts "[specbandit] Enqueued #{resolved.size} files onto key '#{key}' (TTL: #{key_ttl}s)."
-      output.puts format('[specbandit] Redis latency: push %.1fms, publish-marker %.1fms (total %.1fms).',
-                         push_ms, mark_ms, push_ms + mark_ms)
+      output.puts format('[specbandit] Redis latency: push %.1fms, mark published %.1fms.', push_ms, mark_ms)
       resolved.size
     end
 
