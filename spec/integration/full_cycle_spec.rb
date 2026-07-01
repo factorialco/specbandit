@@ -22,7 +22,7 @@ RSpec.describe 'Full cycle integration', :integration do
 
   after(:each) do
     begin
-      @redis&.del(key)
+      @redis&.del(key, "#{key}:published")
     rescue StandardError
       nil
     end
@@ -169,7 +169,6 @@ RSpec.describe 'Full cycle integration', :integration do
       batch_size: 10,
       adapter: adapter,
       key_failed: key_failed,
-      key_failed_ttl: 3600,
       queue: Specbandit::RedisQueue.new(redis_url: redis_url),
       output: output
     )

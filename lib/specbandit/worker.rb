@@ -4,7 +4,7 @@ require 'json'
 
 module Specbandit
   class Worker
-    attr_reader :queue, :key, :batch_size, :adapter, :key_rerun, :key_rerun_ttl, :key_failed, :key_failed_ttl, :rerun,
+    attr_reader :queue, :key, :batch_size, :adapter, :key_rerun, :key_ttl, :key_failed,
                 :output, :verbose, :report
 
     def initialize(
@@ -12,10 +12,8 @@ module Specbandit
       batch_size: Specbandit.configuration.batch_size,
       adapter: nil,
       key_rerun: Specbandit.configuration.key_rerun,
-      key_rerun_ttl: Specbandit.configuration.key_rerun_ttl,
+      key_ttl: Specbandit.configuration.key_ttl,
       key_failed: Specbandit.configuration.key_failed,
-      key_failed_ttl: Specbandit.configuration.key_failed_ttl,
-      rerun: Specbandit.configuration.rerun,
       verbose: Specbandit.configuration.verbose,
       report: Specbandit.configuration.report,
       queue: nil,
@@ -27,10 +25,8 @@ module Specbandit
       @key = key
       @batch_size = batch_size
       @key_rerun = key_rerun
-      @key_rerun_ttl = key_rerun_ttl
+      @key_ttl = key_ttl
       @key_failed = key_failed
-      @key_failed_ttl = key_failed_ttl
-      @rerun = rerun
       @verbose = verbose
       @report = report
       @queue = queue || RedisQueue.new
@@ -69,22 +65,42 @@ module Specbandit
 
     private
 
-    # Decide the operating mode and execute it, returning the exit code.
-    # - no usable rerun key → steal mode (or crash if --rerun was requested)
-    # - rerun key has data  → replay mode
-    # - rerun key but empty → record mode (or crash if --rerun was requested)
+    # Decide the operating mode from the state of Redis and execute it.
+    #
+    # The mode is derived entirely from Redis -- never from an environment
+    # variable or flag -- following this table:
+    #
+    #   Published | Key (queue)    | Rerun key   | Behavior
+    #   ----------|----------------|-------------|-------------------------------
+    #   No        | --             | --          | Crash: nothing was ever pushed
+    #   Yes       | empty/drained  | empty       | OK: worker arriving late (0)
+    #   Yes       | has data       | empty       | Steal (record if rerun key set)
+    #   Yes       | empty/drained  | has data    | Replay recorded files
+    #   Yes       | has data       | has data    | Crash: inconsistent (weird case)
+    #
+    # "Published" is a durable marker written by `specbandit push`; it is the
+    # only reliable signal that work was ever enqueued, because Redis
+    # auto-deletes empty lists (so a drained queue is indistinguishable from a
+    # never-created one by the list alone).
     def determine_exit_code
-      unless key_present?(key_rerun)
-        return fail_stale_rerun if rerun
+      return fail_not_published unless queue.published?(key)
 
-        return run_steal(record: false)
+      key_has_data = queue.length(key).positive?
+      rerun_files = key_present?(key_rerun) ? queue.read_all(key_rerun) : []
+
+      if key_has_data && rerun_files.any?
+        fail_inconsistent_state
+      elsif rerun_files.any?
+        run_replay(rerun_files)
+      elsif key_has_data
+        run_steal(record: key_present?(key_rerun))
+      else
+        # Published, but the queue is drained and this runner has no rerun
+        # memory: it simply arrived after everything was already taken.
+        output.puts "[specbandit] Queue '#{key}' already drained and no rerun files to replay. " \
+                    'Nothing to do (worker arriving late).' if verbose
+        0
       end
-
-      rerun_files = queue.read_all(key_rerun)
-      return run_replay(rerun_files) if rerun_files.any?
-      return fail_stale_rerun if rerun
-
-      run_steal(record: true)
     end
 
     # A Redis key name is usable only when it is a non-nil, non-empty string.
@@ -94,15 +110,22 @@ module Specbandit
       !value.nil? && !value.empty?
     end
 
-    # Emit the stale/missing-rerun error and return exit code 1.
-    def fail_stale_rerun
-      if key_present?(key_rerun)
-        output.puts "[specbandit] ERROR: --rerun flag is set but rerun key '#{key_rerun}' is empty."
-      else
-        output.puts '[specbandit] ERROR: --rerun flag is set but no rerun key is configured.'
-      end
-      output.puts '[specbandit] The rerun key may have expired (TTL) or Redis was flushed.'
-      output.puts '[specbandit] Cannot replay — failing to prevent silent false pass.'
+    # No published marker for this key: `specbandit push` was never run for it,
+    # or the key expired. Crash rather than silently pass with zero tests.
+    def fail_not_published
+      output.puts "[specbandit] ERROR: queue '#{key}' was never published."
+      output.puts '[specbandit] Run `specbandit push` before `specbandit work`, or the key/TTL may have expired.'
+      output.puts '[specbandit] Refusing to run to prevent a silent false pass.'
+      1
+    end
+
+    # Both the shared queue and this runner's rerun key hold files at once.
+    # That should never happen: a fresh run has no rerun memory yet, and a
+    # re-run reads from a drained queue. Crash instead of double-executing.
+    def fail_inconsistent_state
+      output.puts "[specbandit] ERROR: inconsistent state — shared queue '#{key}' still has files " \
+                  "while rerun key '#{key_rerun}' also has recorded files."
+      output.puts '[specbandit] Refusing to run to avoid double-execution / undefined behavior.'
       1
     end
 
@@ -159,7 +182,7 @@ module Specbandit
         end
 
         # Record the stolen batch so this runner can replay on re-run
-        queue.push(key_rerun, files, ttl: key_rerun_ttl) if record
+        queue.push(key_rerun, files, ttl: key_ttl) if record
 
         batch_num += 1
         output.puts "[specbandit] Batch ##{batch_num}: running #{files.size} files" if verbose
@@ -200,7 +223,7 @@ module Specbandit
       failed_files = extract_failed_files(result) || files
       return if failed_files.empty?
 
-      queue.push(key_failed, failed_files, ttl: key_failed_ttl)
+      queue.push(key_failed, failed_files, ttl: key_ttl)
     end
 
     # Extract individual failed file paths from an RspecBatchResult's JSON output.

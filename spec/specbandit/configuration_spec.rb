@@ -22,20 +22,12 @@ RSpec.describe Specbandit::Configuration do
       expect(config.rspec_opts).to eq([])
     end
 
-    it 'uses default key_ttl of 6 hours' do
-      expect(config.key_ttl).to eq(21_600)
+    it 'uses default key_ttl of 1 week' do
+      expect(config.key_ttl).to eq(604_800)
     end
 
     it 'has nil key_rerun by default' do
       expect(config.key_rerun).to be_nil
-    end
-
-    it 'uses default key_rerun_ttl of 1 week' do
-      expect(config.key_rerun_ttl).to eq(604_800)
-    end
-
-    it 'has false rerun by default' do
-      expect(config.rerun).to be false
     end
 
     it 'uses cli as default adapter' do
@@ -54,10 +46,6 @@ RSpec.describe Specbandit::Configuration do
       expect(config.key_failed).to be_nil
     end
 
-    it 'uses default key_failed_ttl of 1 week' do
-      expect(config.key_failed_ttl).to eq(604_800)
-    end
-
     it 'has nil report by default' do
       expect(config.report).to be_nil
     end
@@ -72,13 +60,10 @@ RSpec.describe Specbandit::Configuration do
         'SPECBANDIT_RSPEC_OPTS',
         'SPECBANDIT_KEY_TTL',
         'SPECBANDIT_KEY_RERUN',
-        'SPECBANDIT_KEY_RERUN_TTL',
-        'SPECBANDIT_RERUN',
         'SPECBANDIT_ADAPTER',
         'SPECBANDIT_COMMAND',
         'SPECBANDIT_COMMAND_OPTS',
         'SPECBANDIT_KEY_FAILED',
-        'SPECBANDIT_KEY_FAILED_TTL',
         'SPECBANDIT_REPORT'
       )
       example.run
@@ -89,13 +74,10 @@ RSpec.describe Specbandit::Configuration do
       ENV.delete('SPECBANDIT_RSPEC_OPTS')
       ENV.delete('SPECBANDIT_KEY_TTL')
       ENV.delete('SPECBANDIT_KEY_RERUN')
-      ENV.delete('SPECBANDIT_KEY_RERUN_TTL')
-      ENV.delete('SPECBANDIT_RERUN')
       ENV.delete('SPECBANDIT_ADAPTER')
       ENV.delete('SPECBANDIT_COMMAND')
       ENV.delete('SPECBANDIT_COMMAND_OPTS')
       ENV.delete('SPECBANDIT_KEY_FAILED')
-      ENV.delete('SPECBANDIT_KEY_FAILED_TTL')
       ENV.delete('SPECBANDIT_REPORT')
       original_env.each { |k, v| ENV[k] = v }
     end
@@ -136,18 +118,6 @@ RSpec.describe Specbandit::Configuration do
       expect(config.key_rerun).to eq('pr-42-run-99-runner-3')
     end
 
-    it 'reads key_rerun_ttl from SPECBANDIT_KEY_RERUN_TTL' do
-      ENV['SPECBANDIT_KEY_RERUN_TTL'] = '86400'
-      config = described_class.new
-      expect(config.key_rerun_ttl).to eq(86_400)
-    end
-
-    it 'reads rerun from SPECBANDIT_RERUN' do
-      ENV['SPECBANDIT_RERUN'] = '1'
-      config = described_class.new
-      expect(config.rerun).to be true
-    end
-
     it 'reads adapter from SPECBANDIT_ADAPTER' do
       ENV['SPECBANDIT_ADAPTER'] = 'rspec'
       config = described_class.new
@@ -170,12 +140,6 @@ RSpec.describe Specbandit::Configuration do
       ENV['SPECBANDIT_KEY_FAILED'] = 'pr-42-failed'
       config = described_class.new
       expect(config.key_failed).to eq('pr-42-failed')
-    end
-
-    it 'reads key_failed_ttl from SPECBANDIT_KEY_FAILED_TTL' do
-      ENV['SPECBANDIT_KEY_FAILED_TTL'] = '86400'
-      config = described_class.new
-      expect(config.key_failed_ttl).to eq(86_400)
     end
 
     it 'reads report from SPECBANDIT_REPORT' do
@@ -214,47 +178,6 @@ RSpec.describe Specbandit::Configuration do
       expect { config.validate! }.to raise_error(
         Specbandit::Error, /key_ttl must be a positive integer/
       )
-    end
-
-    it 'raises when key_rerun_ttl is not positive' do
-      config.key = 'valid-key'
-      config.key_rerun_ttl = 0
-      expect { config.validate! }.to raise_error(
-        Specbandit::Error, /key_rerun_ttl must be a positive integer/
-      )
-    end
-
-    it 'raises when key_failed_ttl is not positive' do
-      config.key = 'valid-key'
-      config.key_failed_ttl = 0
-      expect { config.validate! }.to raise_error(
-        Specbandit::Error, /key_failed_ttl must be a positive integer/
-      )
-    end
-
-    it 'raises when rerun is set without key_rerun' do
-      config.key = 'valid-key'
-      config.rerun = true
-      config.key_rerun = nil
-      expect { config.validate! }.to raise_error(
-        Specbandit::Error, /--rerun requires --key-rerun to be set/
-      )
-    end
-
-    it 'raises when rerun is set with an empty key_rerun' do
-      config.key = 'valid-key'
-      config.rerun = true
-      config.key_rerun = ''
-      expect { config.validate! }.to raise_error(
-        Specbandit::Error, /--rerun requires --key-rerun to be set/
-      )
-    end
-
-    it 'passes when rerun is set with a valid key_rerun' do
-      config.key = 'valid-key'
-      config.rerun = true
-      config.key_rerun = 'pr-42-runner-3'
-      expect { config.validate! }.not_to raise_error
     end
 
     it 'passes when key and batch_size are valid' do

@@ -17,6 +17,11 @@ RSpec.describe Specbandit::Worker do
     allow(RSpec.world).to receive(:wants_to_quit=)
     allow(RSpec.world).to receive(:non_example_failure=)
     allow(RSpec.configuration).to receive(:output_stream=)
+
+    # Default happy-path Redis state: the key was published and the shared
+    # queue has data (steal path). Replay/worker-late contexts override :length.
+    allow(queue).to receive(:published?).and_return(true)
+    allow(queue).to receive(:length).and_return(1)
   end
 
   # Helper: extract the LAST --out path from RSpec::Core::Runner.run args.
@@ -97,6 +102,75 @@ RSpec.describe Specbandit::Worker do
         expect(output.string).to include('Files:')
         expect(output.string).to include('Failed batches:')
         expect(output.string).not_to include('Examples:')
+      end
+    end
+
+    context 'dispatch table (published marker + key/rerun state)' do
+      let(:key_rerun) { 'pr-123-run-456-runner-3' }
+
+      subject(:worker) do
+        described_class.new(
+          key: key,
+          batch_size: 2,
+          rspec_opts: [],
+          key_rerun: key_rerun,
+          queue: queue,
+          output: output
+        )
+      end
+
+      context 'when the key was never published' do
+        before { allow(queue).to receive(:published?).with(key).and_return(false) }
+
+        it 'crashes with exit code 1 instead of silently passing' do
+          expect(queue).not_to receive(:steal)
+          expect(queue).not_to receive(:read_all)
+
+          expect(worker.run).to eq(1)
+        end
+
+        it 'prints a clear "never published" error' do
+          worker.run
+
+          expect(output.string).to include('ERROR')
+          expect(output.string).to include('was never published')
+          expect(output.string).to include('Refusing to run')
+        end
+      end
+
+      context 'when published but the queue is drained and there is no rerun memory' do
+        before do
+          allow(queue).to receive(:length).with(key).and_return(0)
+          allow(queue).to receive(:read_all).with(key_rerun).and_return([])
+        end
+
+        it 'exits 0 without running anything (worker arriving late)' do
+          expect(queue).not_to receive(:steal)
+
+          expect(worker.run).to eq(0)
+          expect(RSpec::Core::Runner).not_to have_received(:run)
+        end
+      end
+
+      context 'when both the shared queue and the rerun key have data' do
+        before do
+          allow(queue).to receive(:length).with(key).and_return(3)
+          allow(queue).to receive(:read_all).with(key_rerun).and_return(['spec/x_spec.rb'])
+        end
+
+        it 'crashes with exit code 1 (inconsistent state)' do
+          expect(queue).not_to receive(:steal)
+
+          expect(worker.run).to eq(1)
+          expect(RSpec::Core::Runner).not_to have_received(:run)
+        end
+
+        it 'prints a clear "inconsistent state" error' do
+          worker.run
+
+          expect(output.string).to include('ERROR')
+          expect(output.string).to include('inconsistent state')
+        end
       end
     end
 
@@ -208,7 +282,6 @@ RSpec.describe Specbandit::Worker do
           batch_size: 2,
           rspec_opts: [],
           key_rerun: key_rerun,
-          key_rerun_ttl: 604_800,
           queue: queue,
           output: output
         )
@@ -274,68 +347,6 @@ RSpec.describe Specbandit::Worker do
 
         expect(exit_code).to eq(0)
       end
-
-      context 'with --rerun set' do
-        subject(:worker) do
-          described_class.new(
-            key: key,
-            batch_size: 2,
-            rspec_opts: [],
-            key_rerun: '',
-            rerun: true,
-            queue: queue,
-            output: output
-          )
-        end
-
-        it 'fails hard with exit code 1 and does not steal' do
-          expect(queue).not_to receive(:steal)
-          expect(queue).not_to receive(:read_all)
-
-          exit_code = worker.run
-
-          expect(exit_code).to eq(1)
-        end
-
-        it 'prints a clear "no rerun key configured" error message' do
-          worker.run
-
-          expect(output.string).to include('ERROR')
-          expect(output.string).to include('no rerun key is configured')
-          expect(output.string).to include('Cannot replay')
-        end
-      end
-    end
-
-    context 'nil rerun key with --rerun (direct construction)' do
-      subject(:worker) do
-        described_class.new(
-          key: key,
-          batch_size: 2,
-          rspec_opts: [],
-          key_rerun: nil,
-          rerun: true,
-          queue: queue,
-          output: output
-        )
-      end
-
-      it 'crashes rather than silently running everything' do
-        expect(queue).not_to receive(:steal)
-        expect(queue).not_to receive(:read_all)
-
-        exit_code = worker.run
-
-        expect(exit_code).to eq(1)
-      end
-
-      it 'prints a clear "no rerun key configured" error message' do
-        worker.run
-
-        expect(output.string).to include('ERROR')
-        expect(output.string).to include('no rerun key is configured')
-        expect(output.string).to include('Cannot replay')
-      end
     end
 
     context 'failed key recording (key_failed set)' do
@@ -349,7 +360,6 @@ RSpec.describe Specbandit::Worker do
             rspec_opts: [],
             key_rerun: nil,
             key_failed: key_failed,
-            key_failed_ttl: 604_800,
             queue: queue,
             output: output
           )
@@ -427,7 +437,6 @@ RSpec.describe Specbandit::Worker do
             adapter: mock_adapter,
             key_rerun: nil,
             key_failed: key_failed,
-            key_failed_ttl: 604_800,
             queue: queue,
             output: output
           )
@@ -496,15 +505,15 @@ RSpec.describe Specbandit::Worker do
             batch_size: 2,
             rspec_opts: [],
             key_rerun: key_rerun,
-            key_rerun_ttl: 604_800,
             key_failed: key_failed,
-            key_failed_ttl: 604_800,
             queue: queue,
             output: output
           )
         end
 
         before do
+          # Replay mode: shared queue drained, rerun key has data.
+          allow(queue).to receive(:length).with(key).and_return(0)
           allow(queue).to receive(:read_all).with(key_rerun).and_return(recorded_files)
         end
 
@@ -609,14 +618,14 @@ RSpec.describe Specbandit::Worker do
           batch_size: 2,
           rspec_opts: [],
           key_rerun: key_rerun,
-          key_rerun_ttl: 604_800,
           queue: queue,
           output: output
         )
       end
 
       before do
-        # Rerun key has data -> replay mode
+        # Rerun key has data + shared queue drained -> replay mode
+        allow(queue).to receive(:length).with(key).and_return(0)
         allow(queue).to receive(:read_all).with(key_rerun).and_return(recorded_files)
       end
 
@@ -641,81 +650,6 @@ RSpec.describe Specbandit::Worker do
         exit_code = worker.run
 
         expect(exit_code).to eq(1)
-      end
-    end
-
-    context 'rerun flag with empty rerun key (stale rerun)' do
-      let(:key_rerun) { 'pr-123-run-456-runner-3' }
-
-      subject(:worker) do
-        described_class.new(
-          key: key,
-          batch_size: 2,
-          rspec_opts: [],
-          key_rerun: key_rerun,
-          key_rerun_ttl: 604_800,
-          rerun: true,
-          queue: queue,
-          output: output
-        )
-      end
-
-      before do
-        allow(queue).to receive(:read_all).with(key_rerun).and_return([])
-      end
-
-      it 'fails hard with exit code 1' do
-        exit_code = worker.run
-
-        expect(exit_code).to eq(1)
-      end
-
-      it 'prints a clear error message' do
-        worker.run
-
-        expect(output.string).to include('ERROR')
-        expect(output.string).to include("rerun key '#{key_rerun}' is empty")
-        expect(output.string).to include('Cannot replay')
-      end
-
-      it 'does not steal from the shared queue' do
-        expect(queue).not_to receive(:steal)
-
-        worker.run
-      end
-
-      it 'does not run any specs' do
-        worker.run
-
-        expect(RSpec::Core::Runner).not_to have_received(:run)
-      end
-    end
-
-    context 'rerun flag with populated rerun key (valid rerun)' do
-      let(:key_rerun) { 'pr-123-run-456-runner-3' }
-      let(:recorded_files) { ['spec/x_spec.rb', 'spec/y_spec.rb'] }
-
-      subject(:worker) do
-        described_class.new(
-          key: key,
-          batch_size: 2,
-          rspec_opts: [],
-          key_rerun: key_rerun,
-          key_rerun_ttl: 604_800,
-          rerun: true,
-          queue: queue,
-          output: output
-        )
-      end
-
-      before do
-        allow(queue).to receive(:read_all).with(key_rerun).and_return(recorded_files)
-      end
-
-      it 'enters replay mode normally' do
-        exit_code = worker.run
-
-        expect(exit_code).to eq(0)
       end
     end
 

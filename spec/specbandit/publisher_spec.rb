@@ -19,11 +19,22 @@ RSpec.describe Specbandit::Publisher do
     it 'pushes files to the queue with ttl and returns count' do
       files = ['spec/a_spec.rb', 'spec/b_spec.rb']
       expect(queue).to receive(:push).with(key, files, ttl: 21_600).and_return(2)
+      expect(queue).to receive(:mark_published).with(key, ttl: 21_600)
 
       count = publisher.publish(files: files)
 
       expect(count).to eq(2)
       expect(output.string).to include('Enqueued 2 files')
+    end
+
+    it 'logs the Redis latency of the push and publish-marker round-trips' do
+      files = ['spec/a_spec.rb', 'spec/b_spec.rb']
+      allow(queue).to receive(:push).with(key, files, ttl: 21_600).and_return(2)
+      allow(queue).to receive(:mark_published).with(key, ttl: 21_600)
+
+      publisher.publish(files: files)
+
+      expect(output.string).to match(/Redis latency: push \d+\.\d+ms, mark published \d+\.\d+ms\./)
     end
   end
 
@@ -33,6 +44,7 @@ RSpec.describe Specbandit::Publisher do
                                   .and_return(['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb'])
       expect(queue).to receive(:push).with(key, ['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb'],
                                            ttl: 21_600).and_return(3)
+      expect(queue).to receive(:mark_published).with(key, ttl: 21_600)
 
       count = publisher.publish(pattern: 'spec/**/*_spec.rb')
 
@@ -51,6 +63,7 @@ RSpec.describe Specbandit::Publisher do
       expect(queue).to receive(:push)
         .with(key, ['spec/x_spec.rb', 'spec/y_spec.rb'], ttl: 21_600)
         .and_return(2)
+      expect(queue).to receive(:mark_published).with(key, ttl: 21_600)
 
       count = publisher.publish
       expect(count).to eq(2)
@@ -58,7 +71,9 @@ RSpec.describe Specbandit::Publisher do
   end
 
   describe '#publish with no files' do
-    it 'returns 0 and prints a message' do
+    it 'returns 0, prints a message, and does not mark the key published' do
+      expect(queue).not_to receive(:mark_published)
+
       count = publisher.publish(files: [])
 
       expect(count).to eq(0)
