@@ -26,6 +26,16 @@ RSpec.describe Specbandit::Publisher do
       expect(count).to eq(2)
       expect(output.string).to include('Enqueued 2 files')
     end
+
+    it 'logs the Redis latency of the push and publish-marker round-trips' do
+      files = ['spec/a_spec.rb', 'spec/b_spec.rb']
+      allow(queue).to receive(:push).with(key, files, ttl: 21_600).and_return(2)
+      allow(queue).to receive(:mark_published).with(key, ttl: 21_600)
+
+      publisher.publish(files: files)
+
+      expect(output.string).to match(/Redis latency: push \d+\.\d+ms, publish-marker \d+\.\d+ms/)
+    end
   end
 
   describe '#publish with pattern' do
