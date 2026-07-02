@@ -224,6 +224,10 @@ module Specbandit
       return if failed_files.empty?
 
       queue.push(key_failed, failed_files, ttl: key_ttl)
+      # The failed key is later consumed by a retry `work` pass, which refuses to
+      # run any key without a published marker. `push` alone doesn't set it, so
+      # mark it here -- otherwise the retry crashes with "was never published".
+      queue.mark_published(key_failed, ttl: key_ttl)
     end
 
     # Extract individual failed file paths from an RspecBatchResult's JSON output.
