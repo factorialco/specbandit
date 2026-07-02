@@ -22,6 +22,9 @@ RSpec.describe Specbandit::Worker do
     # queue has data (steal path). Replay/worker-late contexts override :length.
     allow(queue).to receive(:published?).and_return(true)
     allow(queue).to receive(:length).and_return(1)
+    # record_failed_files marks the failed key published after pushing so the
+    # retry `work` pass can consume it; allow it on the double by default.
+    allow(queue).to receive(:mark_published)
   end
 
   # Helper: extract the LAST --out path from RSpec::Core::Runner.run args.
@@ -454,6 +457,24 @@ RSpec.describe Specbandit::Worker do
 
           expect(queue).to receive(:push)
             .with(key_failed, ['spec/a_spec.rb', 'spec/b_spec.rb'], ttl: 604_800)
+          # The failed key must be marked published so a later retry `work` pass
+          # (which gates on the published marker) can consume it.
+          expect(queue).to receive(:mark_published).with(key_failed, ttl: 604_800)
+
+          worker.run
+        end
+
+        it 'does not mark the failed key published when the batch passes' do
+          expect(queue).to receive(:steal).with(key, 2)
+                                          .and_return(['spec/a_spec.rb'])
+          expect(queue).to receive(:steal).with(key, 2).and_return([])
+
+          allow(mock_adapter).to receive(:run_batch).and_return(
+            Specbandit::BatchResult.new(batch_num: 1, files: ['spec/a_spec.rb'],
+                                        exit_code: 0, duration: 1.0)
+          )
+
+          expect(queue).not_to receive(:mark_published)
 
           worker.run
         end
