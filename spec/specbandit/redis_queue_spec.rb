@@ -11,6 +11,38 @@ RSpec.describe Specbandit::RedisQueue do
     allow(Redis).to receive(:new).and_return(redis_double)
   end
 
+  describe '#initialize' do
+    it 'passes explicit connect/read/write timeouts and reconnect_attempts to Redis' do
+      described_class.new(
+        redis_url: 'redis://example:6379',
+        connect_timeout: 3.0,
+        read_timeout: 5.0,
+        write_timeout: 5.0,
+        reconnect_attempts: 3
+      )
+
+      expect(Redis).to have_received(:new).with(
+        url: 'redis://example:6379',
+        connect_timeout: 3.0,
+        read_timeout: 5.0,
+        write_timeout: 5.0,
+        reconnect_attempts: 3
+      )
+    end
+
+    it 'defaults connection options from the global configuration' do
+      Specbandit.configuration.redis_connect_timeout = 1.5
+      Specbandit.configuration.redis_timeout = 2.5
+      Specbandit.configuration.redis_reconnect_attempts = 4
+
+      described_class.new(redis_url: 'redis://localhost:6379')
+
+      expect(Redis).to have_received(:new).with(
+        hash_including(connect_timeout: 1.5, read_timeout: 2.5, write_timeout: 2.5, reconnect_attempts: 4)
+      )
+    end
+  end
+
   describe '#push' do
     it 'calls RPUSH with the key and files' do
       files = ['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb']
@@ -138,11 +170,29 @@ RSpec.describe Specbandit::RedisQueue do
       expect(call_count).to eq(3)
     end
 
-    it 'raises after exhausting all 3 attempts' do
-      allow(redis_double).to receive(:llen).with('my-key')
-                                           .and_raise(Redis::CannotConnectError, 'connection refused')
+    it 'raises after exhausting all attempts (default 5)' do
+      call_count = 0
+      allow(redis_double).to receive(:llen).with('my-key') do
+        call_count += 1
+        raise Redis::CannotConnectError, 'connection refused'
+      end
 
       expect { queue.length('my-key') }.to raise_error(Redis::CannotConnectError)
+      expect(call_count).to eq(5)
+    end
+
+    it 'honours a custom max_attempts' do
+      queue = described_class.new(max_attempts: 2)
+      allow(queue).to receive(:sleep)
+      allow(queue).to receive(:warn)
+      call_count = 0
+      allow(redis_double).to receive(:llen).with('my-key') do
+        call_count += 1
+        raise Redis::CannotConnectError, 'connection refused'
+      end
+
+      expect { queue.length('my-key') }.to raise_error(Redis::CannotConnectError)
+      expect(call_count).to eq(2)
     end
 
     it 'uses exponential backoff with base 1s' do
@@ -171,7 +221,7 @@ RSpec.describe Specbandit::RedisQueue do
 
       queue.length('my-key')
 
-      expect(queue).to have_received(:warn).with(%r{Redis connection failed \(attempt 1/3\).*Retrying in 2s})
+      expect(queue).to have_received(:warn).with(%r{Redis connection failed \(attempt 1/5\).*Retrying in 2s})
     end
   end
 
