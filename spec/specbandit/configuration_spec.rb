@@ -49,6 +49,13 @@ RSpec.describe Specbandit::Configuration do
     it 'has nil report by default' do
       expect(config.report).to be_nil
     end
+
+    it 'uses default redis resilience settings' do
+      expect(config.redis_max_attempts).to eq(5)
+      expect(config.redis_connect_timeout).to eq(3.0)
+      expect(config.redis_timeout).to eq(5.0)
+      expect(config.redis_reconnect_attempts).to eq(3)
+    end
   end
 
   describe 'environment variable overrides' do
@@ -64,21 +71,21 @@ RSpec.describe Specbandit::Configuration do
         'SPECBANDIT_COMMAND',
         'SPECBANDIT_COMMAND_OPTS',
         'SPECBANDIT_KEY_FAILED',
-        'SPECBANDIT_REPORT'
+        'SPECBANDIT_REPORT',
+        'SPECBANDIT_REDIS_MAX_ATTEMPTS',
+        'SPECBANDIT_REDIS_CONNECT_TIMEOUT',
+        'SPECBANDIT_REDIS_TIMEOUT',
+        'SPECBANDIT_REDIS_RECONNECT_ATTEMPTS'
       )
       example.run
     ensure
-      ENV.delete('SPECBANDIT_REDIS_URL')
-      ENV.delete('SPECBANDIT_BATCH_SIZE')
-      ENV.delete('SPECBANDIT_KEY')
-      ENV.delete('SPECBANDIT_RSPEC_OPTS')
-      ENV.delete('SPECBANDIT_KEY_TTL')
-      ENV.delete('SPECBANDIT_KEY_RERUN')
-      ENV.delete('SPECBANDIT_ADAPTER')
-      ENV.delete('SPECBANDIT_COMMAND')
-      ENV.delete('SPECBANDIT_COMMAND_OPTS')
-      ENV.delete('SPECBANDIT_KEY_FAILED')
-      ENV.delete('SPECBANDIT_REPORT')
+      %w[
+        SPECBANDIT_REDIS_URL SPECBANDIT_BATCH_SIZE SPECBANDIT_KEY SPECBANDIT_RSPEC_OPTS
+        SPECBANDIT_KEY_TTL SPECBANDIT_KEY_RERUN SPECBANDIT_ADAPTER SPECBANDIT_COMMAND
+        SPECBANDIT_COMMAND_OPTS SPECBANDIT_KEY_FAILED SPECBANDIT_REPORT
+        SPECBANDIT_REDIS_MAX_ATTEMPTS SPECBANDIT_REDIS_CONNECT_TIMEOUT SPECBANDIT_REDIS_TIMEOUT
+        SPECBANDIT_REDIS_RECONNECT_ATTEMPTS
+      ].each { |k| ENV.delete(k) }
       original_env.each { |k, v| ENV[k] = v }
     end
 
@@ -146,6 +153,18 @@ RSpec.describe Specbandit::Configuration do
       ENV['SPECBANDIT_REPORT'] = '/tmp/report.json'
       config = described_class.new
       expect(config.report).to eq('/tmp/report.json')
+    end
+
+    it 'reads redis resilience settings from the environment' do
+      ENV['SPECBANDIT_REDIS_MAX_ATTEMPTS'] = '8'
+      ENV['SPECBANDIT_REDIS_CONNECT_TIMEOUT'] = '2.5'
+      ENV['SPECBANDIT_REDIS_TIMEOUT'] = '7'
+      ENV['SPECBANDIT_REDIS_RECONNECT_ATTEMPTS'] = '1'
+      config = described_class.new
+      expect(config.redis_max_attempts).to eq(8)
+      expect(config.redis_connect_timeout).to eq(2.5)
+      expect(config.redis_timeout).to eq(7.0)
+      expect(config.redis_reconnect_attempts).to eq(1)
     end
   end
 

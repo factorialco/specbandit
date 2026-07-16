@@ -6,11 +6,27 @@ module Specbandit
   class RedisQueue
     attr_reader :redis
 
-    def initialize(redis_url: Specbandit.configuration.redis_url)
-      @redis = Redis.new(url: redis_url)
-    end
+    # Cap the exponential backoff so a real outage degrades/fails within a
+    # bounded window instead of sleeping for minutes on the last attempts.
+    MAX_BACKOFF_SECONDS = 10
 
-    MAX_ATTEMPTS = 3
+    def initialize(
+      redis_url: Specbandit.configuration.redis_url,
+      connect_timeout: Specbandit.configuration.redis_connect_timeout,
+      read_timeout: Specbandit.configuration.redis_timeout,
+      write_timeout: Specbandit.configuration.redis_timeout,
+      reconnect_attempts: Specbandit.configuration.redis_reconnect_attempts,
+      max_attempts: Specbandit.configuration.redis_max_attempts
+    )
+      @max_attempts = max_attempts
+      @redis = Redis.new(
+        url: redis_url,
+        connect_timeout: connect_timeout,
+        read_timeout: read_timeout,
+        write_timeout: write_timeout,
+        reconnect_attempts: reconnect_attempts
+      )
+    end
 
     # Push file paths onto the queue and set an expiry on the key.
     # Returns the new length of the list.
@@ -83,7 +99,7 @@ module Specbandit
       "#{key}:published"
     end
 
-    def with_retries(attempts: MAX_ATTEMPTS)
+    def with_retries(attempts: @max_attempts)
       retries = 0
       begin
         yield
@@ -91,7 +107,7 @@ module Specbandit
         retries += 1
         raise if retries >= attempts
 
-        delay = 2**retries
+        delay = [2**retries, MAX_BACKOFF_SECONDS].min
         warn "[specbandit] Redis connection failed (attempt #{retries}/#{attempts}): #{e.message}. Retrying in #{delay}s..."
         sleep(delay)
         retry

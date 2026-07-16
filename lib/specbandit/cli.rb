@@ -131,6 +131,10 @@ module Specbandit
           Specbandit.configuration.report = v
         end
 
+        opts.on('--redis-max-attempts N', Integer, 'Redis connection retry attempts (default: 5)') do |v|
+          Specbandit.configuration.redis_max_attempts = v
+        end
+
         opts.on('--verbose', 'Show per-batch file list and full command output (default: quiet)') do
           Specbandit.configuration.verbose = true
         end
