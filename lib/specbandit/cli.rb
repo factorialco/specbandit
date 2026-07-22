@@ -4,7 +4,7 @@ require 'optparse'
 
 module Specbandit
   class CLI
-    COMMANDS = %w[push work].freeze
+    COMMANDS = %w[push work audit].freeze
 
     def self.run(argv = ARGV)
       new(argv).execute
@@ -24,6 +24,8 @@ module Specbandit
         run_push
       when 'work'
         run_work
+      when 'audit'
+        run_audit
       when nil, '-h', '--help'
         print_usage
         0
@@ -81,6 +83,46 @@ module Specbandit
       count = publisher.publish(files: files_arg, pattern: options[:pattern])
 
       count.positive? ? 0 : 1
+    end
+
+    def run_audit
+      options = { key_rerun_prefix: nil, shards: nil }
+
+      parser = OptionParser.new do |opts|
+        opts.banner = 'Usage: specbandit audit [options]'
+
+        opts.on('--key KEY', 'Redis queue key that was pushed (required, or set SPECBANDIT_KEY)') do |v|
+          Specbandit.configuration.key = v
+        end
+
+        opts.on('--shards N', Integer, 'Number of worker rerun keys to check (required)') do |v|
+          options[:shards] = v
+        end
+
+        opts.on('--key-rerun-prefix PREFIX',
+                "Prefix of the per-worker rerun keys (default: '<key>-rerun-')") do |v|
+          options[:key_rerun_prefix] = v
+        end
+
+        opts.on('--redis-url URL', 'Redis URL (default: redis://localhost:6379)') do |v|
+          Specbandit.configuration.redis_url = v
+        end
+
+        opts.on('-h', '--help', 'Show this help') do
+          puts opts
+          return 0
+        end
+      end
+
+      parser.parse!(argv)
+      Specbandit.configuration.validate!
+      raise Error, 'shards is required (set via --shards)' if options[:shards].nil? || !options[:shards].positive?
+
+      Auditor.new(
+        key: Specbandit.configuration.key,
+        shards: options[:shards],
+        key_rerun_prefix: options[:key_rerun_prefix]
+      ).audit
     end
 
     def run_work
@@ -200,6 +242,7 @@ module Specbandit
         Usage:
           specbandit push [options] [files...]           Enqueue test files into Redis
           specbandit work [options] [-- extra-opts...]   Steal and run test file batches
+          specbandit audit [options]                     Verify every pushed item was picked up by a worker
 
         Push options:
           --key KEY              Redis queue key (required, or set SPECBANDIT_KEY)
@@ -220,6 +263,12 @@ module Specbandit
           --key-ttl SECONDS      TTL for all Redis keys (default: 604800 / 1 week)
           --report FILE          Write JSON report to FILE after run
           --verbose              Show per-batch file list and full command output
+
+        Audit options:
+          --key KEY                  Redis queue key that was pushed (required, or set SPECBANDIT_KEY)
+          --shards N                 Number of worker rerun keys to check (required)
+          --key-rerun-prefix PREFIX  Prefix of the per-worker rerun keys (default: '<key>-rerun-')
+          --redis-url URL            Redis URL (default: redis://localhost:6379)
 
           Arguments after -- are forwarded to the adapter (rspec opts, command opts, etc.).
           They are merged with --command-opts or --rspec-opts if both are provided.

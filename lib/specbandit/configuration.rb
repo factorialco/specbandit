@@ -26,7 +26,11 @@ module Specbandit
     # than relying on library defaults.
     DEFAULT_REDIS_MAX_ATTEMPTS = 5
     DEFAULT_REDIS_CONNECT_TIMEOUT = 3.0
-    DEFAULT_REDIS_TIMEOUT = 5.0
+    # 10s rather than 5s: CI Redis latency spikes past 5s under load, and a
+    # timed-out-but-executed command is exactly the event that used to lose
+    # queue items (see RedisQueue::STEAL_SCRIPT). The steal is retry-safe now,
+    # but a wider timeout keeps retries (and their log noise) rare.
+    DEFAULT_REDIS_TIMEOUT = 10.0
     DEFAULT_REDIS_RECONNECT_ATTEMPTS = 3
 
     def initialize

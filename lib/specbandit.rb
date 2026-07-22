@@ -7,6 +7,7 @@ require 'specbandit/rspec_adapter'
 require 'specbandit/cli_adapter'
 require 'specbandit/redis_queue'
 require 'specbandit/publisher'
+require 'specbandit/auditor'
 require 'specbandit/worker'
 
 module Specbandit

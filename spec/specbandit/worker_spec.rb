@@ -67,7 +67,7 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'calls adapter.setup before batches and adapter.teardown after' do
-        expect(queue).to receive(:steal).with(key, 2).and_return([])
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
         expect(mock_adapter).to receive(:setup).ordered
         expect(mock_adapter).to receive(:teardown).ordered
 
@@ -75,7 +75,7 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'calls adapter.teardown even if an error occurs' do
-        expect(queue).to receive(:steal).with(key, 2).and_raise(StandardError, 'boom')
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_raise(StandardError, 'boom')
         expect(mock_adapter).to receive(:setup)
         expect(mock_adapter).to receive(:teardown)
 
@@ -83,9 +83,9 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'delegates batch execution to the adapter' do
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return(['spec/a_spec.rb', 'spec/b_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2).and_return([])
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
 
         expect(mock_adapter).to receive(:run_batch)
           .with(['spec/a_spec.rb', 'spec/b_spec.rb'], 1)
@@ -96,9 +96,9 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'shows generic summary (Files/Failed batches) for non-RSpec adapter' do
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return(['spec/a_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2).and_return([])
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
 
         worker.run
 
@@ -190,7 +190,7 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'returns 0 when queue is empty from the start' do
-        expect(queue).to receive(:steal).with(key, 2).and_return([])
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
 
         exit_code = worker.run
 
@@ -198,11 +198,11 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'steals and runs batches until queue is exhausted' do
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return(['spec/a_spec.rb', 'spec/b_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return(['spec/c_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return([])
 
         exit_code = worker.run
@@ -212,11 +212,11 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'returns 1 if any batch fails' do
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return(['spec/a_spec.rb', 'spec/b_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return(['spec/c_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return([])
 
         allow(RSpec::Core::Runner).to receive(:run).and_return(0, 1)
@@ -227,11 +227,11 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'continues stealing after a batch failure' do
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return(['spec/a_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return(['spec/b_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return([])
 
         allow(RSpec::Core::Runner).to receive(:run).and_return(1, 0)
@@ -243,9 +243,9 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'passes rspec_opts to the adapter along with injected json formatter' do
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return(['spec/a_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return([])
 
         worker_with_opts = described_class.new(
@@ -268,8 +268,8 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'does not push to any rerun key' do
-        expect(queue).to receive(:steal).with(key, 2).and_return(['spec/a_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2).and_return([])
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return(['spec/a_spec.rb'])
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
         expect(queue).not_to receive(:push)
 
         worker.run
@@ -295,32 +295,47 @@ RSpec.describe Specbandit::Worker do
         allow(queue).to receive(:read_all).with(key_rerun).and_return([])
       end
 
-      it 'steals from the main key and records batches to the rerun key' do
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return(['spec/a_spec.rb', 'spec/b_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return(['spec/c_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return([])
+      it 'steals with the rerun key so recording happens atomically inside the steal' do
+        expect(queue).to receive(:steal)
+          .with(key, 2, token: an_instance_of(String), rerun_key: key_rerun, ttl: 604_800)
+          .and_return(['spec/a_spec.rb', 'spec/b_spec.rb'])
+        expect(queue).to receive(:steal)
+          .with(key, 2, token: an_instance_of(String), rerun_key: key_rerun, ttl: 604_800)
+          .and_return(['spec/c_spec.rb'])
+        expect(queue).to receive(:steal)
+          .with(key, 2, token: an_instance_of(String), rerun_key: key_rerun, ttl: 604_800)
+          .and_return([])
 
-        expect(queue).to receive(:push)
-          .with(key_rerun, ['spec/a_spec.rb', 'spec/b_spec.rb'], ttl: 604_800)
-        expect(queue).to receive(:push)
-          .with(key_rerun, ['spec/c_spec.rb'], ttl: 604_800)
+        # Recording is part of the atomic steal script, not a separate push.
+        expect(queue).not_to receive(:push)
 
         exit_code = worker.run
 
         expect(exit_code).to eq(0)
       end
 
-      it 'returns 1 if any batch fails but still records all batches' do
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return(['spec/a_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2)
-                                        .and_return([])
+      it 'uses a fresh token for every steal call' do
+        tokens = []
+        allow(queue).to receive(:steal) do |_key, _count, token:, **|
+          tokens << token
+          tokens.size == 1 ? ['spec/a_spec.rb'] : []
+        end
+
+        worker.run
+
+        expect(tokens.size).to eq(2)
+        expect(tokens.uniq.size).to eq(2)
+      end
+
+      it 'returns 1 if any batch fails' do
+        expect(queue).to receive(:steal)
+          .with(key, 2, token: an_instance_of(String), rerun_key: key_rerun, ttl: 604_800)
+          .and_return(['spec/a_spec.rb'])
+        expect(queue).to receive(:steal)
+          .with(key, 2, token: an_instance_of(String), rerun_key: key_rerun, ttl: 604_800)
+          .and_return([])
 
         allow(RSpec::Core::Runner).to receive(:run).and_return(1)
-        expect(queue).to receive(:push).with(key_rerun, ['spec/a_spec.rb'], ttl: 604_800)
 
         exit_code = worker.run
 
@@ -341,8 +356,8 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'treats an empty rerun key as no rerun key and steals without recording' do
-        expect(queue).to receive(:steal).with(key, 2).and_return(['spec/a_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2).and_return([])
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return(['spec/a_spec.rb'])
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
         expect(queue).not_to receive(:read_all)
         expect(queue).not_to receive(:push)
 
@@ -369,9 +384,9 @@ RSpec.describe Specbandit::Worker do
         end
 
         it 'pushes only the individually failed files, not the whole batch' do
-          expect(queue).to receive(:steal).with(key, 3)
+          expect(queue).to receive(:steal).with(key, 3, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                           .and_return(['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb'])
-          expect(queue).to receive(:steal).with(key, 3).and_return([])
+          expect(queue).to receive(:steal).with(key, 3, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
 
           allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
             json_path = json_out_from_args(args)
@@ -397,9 +412,9 @@ RSpec.describe Specbandit::Worker do
         end
 
         it 'deduplicates file paths when multiple examples fail in the same file' do
-          expect(queue).to receive(:steal).with(key, 3)
+          expect(queue).to receive(:steal).with(key, 3, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                           .and_return(['spec/a_spec.rb', 'spec/b_spec.rb'])
-          expect(queue).to receive(:steal).with(key, 3).and_return([])
+          expect(queue).to receive(:steal).with(key, 3, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
 
           allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
             json_path = json_out_from_args(args)
@@ -446,9 +461,9 @@ RSpec.describe Specbandit::Worker do
         end
 
         it 'pushes failed batch files to the failed key' do
-          expect(queue).to receive(:steal).with(key, 2)
+          expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                           .and_return(['spec/a_spec.rb', 'spec/b_spec.rb'])
-          expect(queue).to receive(:steal).with(key, 2).and_return([])
+          expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
 
           allow(mock_adapter).to receive(:run_batch).and_return(
             Specbandit::BatchResult.new(batch_num: 1, files: ['spec/a_spec.rb', 'spec/b_spec.rb'],
@@ -465,9 +480,9 @@ RSpec.describe Specbandit::Worker do
         end
 
         it 'does not mark the failed key published when the batch passes' do
-          expect(queue).to receive(:steal).with(key, 2)
+          expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                           .and_return(['spec/a_spec.rb'])
-          expect(queue).to receive(:steal).with(key, 2).and_return([])
+          expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
 
           allow(mock_adapter).to receive(:run_batch).and_return(
             Specbandit::BatchResult.new(batch_num: 1, files: ['spec/a_spec.rb'],
@@ -480,9 +495,9 @@ RSpec.describe Specbandit::Worker do
         end
 
         it 'does not push passing batch files to the failed key' do
-          expect(queue).to receive(:steal).with(key, 2)
+          expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                           .and_return(['spec/a_spec.rb'])
-          expect(queue).to receive(:steal).with(key, 2).and_return([])
+          expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
 
           allow(mock_adapter).to receive(:run_batch).and_return(
             Specbandit::BatchResult.new(batch_num: 1, files: ['spec/a_spec.rb'],
@@ -495,11 +510,11 @@ RSpec.describe Specbandit::Worker do
         end
 
         it 'records only the failed batches when some pass and some fail' do
-          expect(queue).to receive(:steal).with(key, 2)
+          expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                           .and_return(['spec/a_spec.rb'])
-          expect(queue).to receive(:steal).with(key, 2)
+          expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                           .and_return(['spec/b_spec.rb'])
-          expect(queue).to receive(:steal).with(key, 2).and_return([])
+          expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
 
           call_count = 0
           allow(mock_adapter).to receive(:run_batch) do |files, batch_num|
@@ -586,9 +601,9 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'does not push to any failed key even when batches fail' do
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return(['spec/a_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2).and_return([])
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
         expect(queue).not_to receive(:push)
 
         worker.run
@@ -620,9 +635,9 @@ RSpec.describe Specbandit::Worker do
       end
 
       it 'does not push failed files to an empty key name' do
-        expect(queue).to receive(:steal).with(key, 2)
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                         .and_return(['spec/a_spec.rb'])
-        expect(queue).to receive(:steal).with(key, 2).and_return([])
+        expect(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
         expect(queue).not_to receive(:push)
 
         worker.run
@@ -700,7 +715,7 @@ RSpec.describe Specbandit::Worker do
       end
 
       before do
-        allow(queue).to receive(:steal).with(key, 2)
+        allow(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                        .and_return(['spec/a_spec.rb'], [])
       end
 
@@ -780,7 +795,7 @@ RSpec.describe Specbandit::Worker do
 
         it 'prints summary with batch count and timing stats' do
           batch_call = 0
-          allow(queue).to receive(:steal).with(key, 2)
+          allow(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                          .and_return(['spec/a_spec.rb'], ['spec/b_spec.rb'], [])
           allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
             batch_call += 1
@@ -802,7 +817,7 @@ RSpec.describe Specbandit::Worker do
         end
 
         it 'prints failed specs in the summary' do
-          allow(queue).to receive(:steal).with(key, 2)
+          allow(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                          .and_return(['spec/a_spec.rb'], [])
           allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
             json_data = make_rspec_json(
@@ -822,7 +837,7 @@ RSpec.describe Specbandit::Worker do
         end
 
         it 'always shows examples/failures/pending even without user --out' do
-          allow(queue).to receive(:steal).with(key, 2)
+          allow(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                          .and_return(['spec/a_spec.rb'], [])
           allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
             json_data = make_rspec_json(
@@ -855,7 +870,7 @@ RSpec.describe Specbandit::Worker do
 
         it 'merges all batch results into the user JSON output file' do
           batch_call = 0
-          allow(queue).to receive(:steal).with(key, 2)
+          allow(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                          .and_return(['spec/a_spec.rb'], ['spec/b_spec.rb'], [])
           allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
             batch_call += 1
@@ -883,7 +898,7 @@ RSpec.describe Specbandit::Worker do
         end
 
         it 'includes batch_timings in the merged JSON' do
-          allow(queue).to receive(:steal).with(key, 2)
+          allow(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                          .and_return(['spec/a_spec.rb'], [])
           allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
             json_data = make_rspec_json(examples: [passing_example(id: 'a')], duration: 1.0)
@@ -912,7 +927,7 @@ RSpec.describe Specbandit::Worker do
             output: output
           )
 
-          allow(queue).to receive(:steal).with(key, 2)
+          allow(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                          .and_return(['spec/a_spec.rb'], [])
 
           worker_no_json.run
@@ -947,7 +962,7 @@ RSpec.describe Specbandit::Worker do
             )
           end
 
-          allow(queue).to receive(:steal).with(key, 2)
+          allow(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                          .and_return(['spec/a_spec.rb', 'spec/b_spec.rb'],
                                                      ['spec/c_spec.rb'],
                                                      [])
@@ -992,7 +1007,7 @@ RSpec.describe Specbandit::Worker do
             Specbandit::BatchResult.new(batch_num: 1, files: ['spec/a_spec.rb'],
                                         exit_code: 0, duration: 1.0)
           )
-          allow(queue).to receive(:steal).with(key, 2)
+          allow(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                          .and_return(['spec/a_spec.rb'], [])
 
           worker = described_class.new(
@@ -1006,7 +1021,7 @@ RSpec.describe Specbandit::Worker do
         end
 
         it 'does not write a report when no batches ran' do
-          allow(queue).to receive(:steal).with(key, 2).and_return([])
+          allow(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800).and_return([])
 
           worker = described_class.new(
             key: key, batch_size: 2, adapter: mock_adapter,
@@ -1023,7 +1038,7 @@ RSpec.describe Specbandit::Worker do
             Specbandit::BatchResult.new(batch_num: 1, files: ['spec/a_spec.rb'],
                                         exit_code: 0, duration: 5.0)
           )
-          allow(queue).to receive(:steal).with(key, 2)
+          allow(queue).to receive(:steal).with(key, 2, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                          .and_return(['spec/a_spec.rb'], [])
 
           worker = described_class.new(
@@ -1042,7 +1057,7 @@ RSpec.describe Specbandit::Worker do
 
       context 'with RSpec adapter (per-file failed_files granularity)' do
         it 'reports only individually failed files, not the whole batch' do
-          allow(queue).to receive(:steal).with(key, 3)
+          allow(queue).to receive(:steal).with(key, 3, token: an_instance_of(String), rerun_key: nil, ttl: 604_800)
                                          .and_return(['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb'], [])
 
           allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|

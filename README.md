@@ -153,6 +153,12 @@ specbandit work [options] [-- extra-opts...]
 
 Arguments after -- are forwarded to the adapter. They are merged with
 --command-opts (cli adapter) or --rspec-opts (rspec adapter).
+
+specbandit audit [options]
+  --key KEY                  Redis queue key that was pushed (required)
+  --shards N                 Number of worker rerun keys to check (required)
+  --key-rerun-prefix PREFIX  Prefix of the per-worker rerun keys (default: '<key>-rerun-')
+  --redis-url URL            Redis URL (default: redis://localhost:6379)
 ```
 
 ### Environment variables
@@ -425,9 +431,10 @@ specbandit push --key "pr-42-run-100" --key-ttl 259200 --pattern 'spec/**/*_spec
 
 ## How it works
 
-- **Push** uses `RPUSH` to append all file paths to a Redis list in a single command, sets `EXPIRE` on the key, and writes a durable `<key>:published` marker (with the same TTL). Empty Redis lists are auto-deleted, so this marker is what lets `work` tell "never pushed" (crash) apart from "drained, arriving late" (exit 0).
-- **Steal** uses `LPOP key count` (Redis 6.2+), which atomically pops up to N elements. No Lua scripts, no locks, no race conditions.
-- **Record** (when `--key-rerun` is set): after each steal, the batch is also `RPUSH`ed to the per-runner rerun key.
+- **Push** uses `RPUSH` to append all file paths to a Redis list in a single command, sets `EXPIRE` on the key, writes a `<key>:manifest` copy of the list (the durable record of what was enqueued, consumed by `audit`), and writes a durable `<key>:published` marker (with the same TTL). Empty Redis lists are auto-deleted, so this marker is what lets `work` tell "never pushed" (crash) apart from "drained, arriving late" (exit 0).
+- **Steal** runs a small Lua script (Redis 6.2+) that atomically pops up to N elements, records them to the per-runner rerun key, and caches them under a per-call dedup key. The dedup key is what makes the pop **idempotent**: a bare `LPOP` is at-least-once from the server's perspective, so if the command executed but the response was lost (read timeout, connection reset), a client retry would pop -- and silently lose -- the *next* batch. With the script, a retry of the same steal (same token) returns the batch that was already popped.
+- **Record** (when `--key-rerun` is set): the stolen batch is written to the per-runner rerun key inside the same atomic script, so there is no window where a batch is popped but unrecorded.
+- **Audit** (`specbandit audit`, run after all workers finish): compares the `<key>:manifest` against the union of the per-runner rerun keys and exits non-zero if any pushed item was never picked up by a worker. A drained queue looks the same whether every item ran or some were lost -- the audit is what turns silent loss into a hard failure.
 - **Replay** (when the rerun key has data and the shared queue is drained): reads all files from the rerun key via `LRANGE` (non-destructive), splits into batches, and runs them locally. The shared queue is never touched.
 - **Mode selection** is derived entirely from Redis (published marker + queue/rerun state) -- see the decision table above. There is no re-run flag or environment variable.
 - **Run** delegates to the configured adapter:
