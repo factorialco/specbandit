@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'securerandom'
 
 module Specbandit
   class Worker
@@ -174,15 +175,22 @@ module Specbandit
       batch_num = 0
 
       loop do
-        files = queue.steal(key, batch_size)
+        # The token makes the pop idempotent across retries (ours and the
+        # redis client's): a retried steal returns the batch that was already
+        # popped instead of popping -- and silently losing -- the next one.
+        # The rerun recording rides in the same atomic script.
+        files = queue.steal(
+          key,
+          batch_size,
+          token: SecureRandom.hex(8),
+          rerun_key: record ? key_rerun : nil,
+          ttl: key_ttl
+        )
 
         if files.empty?
           output.puts '[specbandit] Queue exhausted. No more files to run.' if verbose
           break
         end
-
-        # Record the stolen batch so this runner can replay on re-run
-        queue.push(key_rerun, files, ttl: key_ttl) if record
 
         batch_num += 1
         output.puts "[specbandit] Batch ##{batch_num}: running #{files.size} files" if verbose

@@ -22,7 +22,9 @@ RSpec.describe 'Full cycle integration', :integration do
 
   after(:each) do
     begin
-      @redis&.del(key, "#{key}:published")
+      @redis&.del(key, "#{key}:published", "#{key}:manifest")
+      leftover = @redis&.scan_each(match: "#{key}*")&.to_a || []
+      @redis&.del(*leftover) if leftover.any?
     rescue StandardError
       nil
     end
@@ -59,6 +61,56 @@ RSpec.describe 'Full cycle integration', :integration do
     # All files were distributed exactly once
     all_stolen = batch1 + batch2 + batch3
     expect(all_stolen.sort).to eq(files.sort)
+
+    queue.close
+  end
+
+  it 'token steals are idempotent: replaying the same token returns the same batch' do
+    files = (1..4).map { |i| "spec/fake_#{i}_spec.rb" }
+    rerun = "#{key}-rerun-1"
+
+    queue = Specbandit::RedisQueue.new(redis_url: redis_url)
+    queue.push(key, files)
+
+    batch = queue.steal(key, 2, token: 'tok-a', rerun_key: rerun, ttl: 600)
+    expect(batch).to eq(files[0, 2])
+
+    # A retry of the same steal (lost response scenario) must return the batch
+    # that was already popped, NOT pop the next two files.
+    replayed = queue.steal(key, 2, token: 'tok-a', rerun_key: rerun, ttl: 600)
+    expect(replayed).to eq(batch)
+    expect(queue.length(key)).to eq(2)
+
+    # Recording rode along atomically.
+    expect(queue.read_all(rerun)).to eq(files[0, 2])
+
+    # A fresh token pops the next batch as usual.
+    expect(queue.steal(key, 2, token: 'tok-b', rerun_key: rerun, ttl: 600)).to eq(files[2, 2])
+    expect(queue.read_all(rerun)).to eq(files)
+
+    queue.close
+  end
+
+  it 'audit passes when everything was stolen and fails when the manifest has an orphan' do
+    files = %w[unit_a unit_b unit_c]
+
+    queue = Specbandit::RedisQueue.new(redis_url: redis_url)
+    publisher = Specbandit::Publisher.new(key: key, queue: queue, output: output)
+    publisher.publish(files: files)
+
+    queue.steal(key, 2, token: 't1', rerun_key: "#{key}-rerun-1", ttl: 600)
+    queue.steal(key, 2, token: 't2', rerun_key: "#{key}-rerun-2", ttl: 600)
+
+    auditor = Specbandit::Auditor.new(key: key, shards: 2, queue: queue, output: output)
+    expect(auditor.audit).to eq(0)
+
+    # Simulate a lost item: enqueue and drain it without any rerun record.
+    queue.push(key, ['unit_lost'])
+    queue.push("#{key}:manifest", ['unit_lost'])
+    queue.steal(key, 1)
+
+    expect(auditor.audit).to eq(1)
+    expect(output.string).to include('unit_lost')
 
     queue.close
   end

@@ -27,6 +27,10 @@ module Specbandit
       end
 
       push_ms = measure { queue.push(key, resolved, ttl: key_ttl) }
+      # Durable copy of what was pushed, for `specbandit audit`: the queue
+      # list is destroyed as workers drain it, so it cannot be compared
+      # against what actually ran after the fact.
+      manifest_ms = measure { queue.push(manifest_key, resolved, ttl: key_ttl) }
       # Record a durable "published" marker so workers can tell a drained
       # queue ("worker arriving late", OK) apart from one that was never
       # pushed ("you didn't push work", crash). Redis auto-deletes empty
@@ -34,11 +38,16 @@ module Specbandit
       mark_ms = measure { queue.mark_published(key, ttl: key_ttl) }
 
       output.puts "[specbandit] Enqueued #{resolved.size} files onto key '#{key}' (TTL: #{key_ttl}s)."
-      output.puts format('[specbandit] Redis latency: push %.1fms, mark published %.1fms.', push_ms, mark_ms)
+      output.puts format('[specbandit] Redis latency: push %.1fms, manifest %.1fms, mark published %.1fms.',
+                         push_ms, manifest_ms, mark_ms)
       resolved.size
     end
 
     private
+
+    def manifest_key
+      "#{key}:manifest"
+    end
 
     # Run the block and return the wall-clock time it took, in milliseconds.
     # Used to surface how long the Redis round-trips took in the push log.

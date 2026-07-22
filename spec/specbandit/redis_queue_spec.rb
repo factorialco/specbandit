@@ -97,6 +97,67 @@ RSpec.describe Specbandit::RedisQueue do
       result = queue.steal('my-key', 1)
       expect(result).to eq(['spec/only_spec.rb'])
     end
+
+    context 'with a token (idempotent script steal)' do
+      let(:sha) { described_class::STEAL_SCRIPT_SHA }
+
+      it 'runs the steal script with queue, dedup and rerun keys' do
+        expect(redis_double).to receive(:evalsha)
+          .with(sha, keys: ['my-key', 'my-key:steal:tok1', 'my-rerun'],
+                     argv: [3, described_class::STEAL_DEDUP_TTL, 3600])
+          .and_return(['spec/a_spec.rb'])
+
+        result = queue.steal('my-key', 3, token: 'tok1', rerun_key: 'my-rerun', ttl: 3600)
+        expect(result).to eq(['spec/a_spec.rb'])
+      end
+
+      it 'omits the rerun key when none is given' do
+        expect(redis_double).to receive(:evalsha)
+          .with(sha, keys: ['my-key', 'my-key:steal:tok1'],
+                     argv: [3, described_class::STEAL_DEDUP_TTL])
+          .and_return([])
+
+        expect(queue.steal('my-key', 3, token: 'tok1')).to eq([])
+      end
+
+      it 'falls back to EVAL when the script is not cached (NOSCRIPT)' do
+        expect(redis_double).to receive(:evalsha)
+          .and_raise(Redis::CommandError, 'NOSCRIPT No matching script')
+        expect(redis_double).to receive(:eval)
+          .with(described_class::STEAL_SCRIPT, keys: ['my-key', 'my-key:steal:tok1', 'my-rerun'],
+                                               argv: [3, described_class::STEAL_DEDUP_TTL, 3600])
+          .and_return(['spec/a_spec.rb'])
+
+        result = queue.steal('my-key', 3, token: 'tok1', rerun_key: 'my-rerun', ttl: 3600)
+        expect(result).to eq(['spec/a_spec.rb'])
+      end
+
+      it 're-raises non-NOSCRIPT command errors' do
+        expect(redis_double).to receive(:evalsha)
+          .and_raise(Redis::CommandError, 'ERR something else')
+
+        expect { queue.steal('my-key', 3, token: 'tok1') }.to raise_error(Redis::CommandError)
+      end
+
+      it 'retries with the same token after a connection error, so a retry cannot skip items' do
+        attempts = 0
+        seen_keys = []
+        allow(redis_double).to receive(:evalsha) do |_sha, keys:, argv:|
+          _ = argv
+          attempts += 1
+          seen_keys << keys
+          raise Redis::CannotConnectError, 'lost' if attempts == 1
+
+          ['spec/a_spec.rb']
+        end
+        allow(queue).to receive(:sleep)
+
+        result = queue.steal('my-key', 3, token: 'tok1')
+
+        expect(result).to eq(['spec/a_spec.rb'])
+        expect(seen_keys.uniq.size).to eq(1)
+      end
+    end
   end
 
   describe '#length' do

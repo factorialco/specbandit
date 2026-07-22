@@ -19,6 +19,7 @@ RSpec.describe Specbandit::Publisher do
     it 'pushes files to the queue with ttl and returns count' do
       files = ['spec/a_spec.rb', 'spec/b_spec.rb']
       expect(queue).to receive(:push).with(key, files, ttl: 21_600).and_return(2)
+      expect(queue).to receive(:push).with("#{key}:manifest", files, ttl: 21_600)
       expect(queue).to receive(:mark_published).with(key, ttl: 21_600)
 
       count = publisher.publish(files: files)
@@ -27,14 +28,24 @@ RSpec.describe Specbandit::Publisher do
       expect(output.string).to include('Enqueued 2 files')
     end
 
-    it 'logs the Redis latency of the push and publish-marker round-trips' do
+    it 'logs the Redis latency of the push, manifest and publish-marker round-trips' do
       files = ['spec/a_spec.rb', 'spec/b_spec.rb']
-      allow(queue).to receive(:push).with(key, files, ttl: 21_600).and_return(2)
+      allow(queue).to receive(:push).and_return(2)
       allow(queue).to receive(:mark_published).with(key, ttl: 21_600)
 
       publisher.publish(files: files)
 
-      expect(output.string).to match(/Redis latency: push \d+\.\d+ms, mark published \d+\.\d+ms\./)
+      expect(output.string)
+        .to match(/Redis latency: push \d+\.\d+ms, manifest \d+\.\d+ms, mark published \d+\.\d+ms\./)
+    end
+
+    it 'writes a manifest copy of the pushed files for later auditing' do
+      files = ['spec/a_spec.rb', 'spec/b_spec.rb']
+      expect(queue).to receive(:push).with(key, files, ttl: 21_600).and_return(2)
+      expect(queue).to receive(:push).with("#{key}:manifest", files, ttl: 21_600)
+      expect(queue).to receive(:mark_published).with(key, ttl: 21_600)
+
+      publisher.publish(files: files)
     end
   end
 
@@ -44,6 +55,8 @@ RSpec.describe Specbandit::Publisher do
                                   .and_return(['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb'])
       expect(queue).to receive(:push).with(key, ['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb'],
                                            ttl: 21_600).and_return(3)
+      expect(queue).to receive(:push).with("#{key}:manifest", ['spec/a_spec.rb', 'spec/b_spec.rb', 'spec/c_spec.rb'],
+                                           ttl: 21_600)
       expect(queue).to receive(:mark_published).with(key, ttl: 21_600)
 
       count = publisher.publish(pattern: 'spec/**/*_spec.rb')
@@ -63,6 +76,8 @@ RSpec.describe Specbandit::Publisher do
       expect(queue).to receive(:push)
         .with(key, ['spec/x_spec.rb', 'spec/y_spec.rb'], ttl: 21_600)
         .and_return(2)
+      expect(queue).to receive(:push)
+        .with("#{key}:manifest", ['spec/x_spec.rb', 'spec/y_spec.rb'], ttl: 21_600)
       expect(queue).to receive(:mark_published).with(key, ttl: 21_600)
 
       count = publisher.publish

@@ -53,7 +53,7 @@ RSpec.describe Specbandit::Configuration do
     it 'uses default redis resilience settings' do
       expect(config.redis_max_attempts).to eq(5)
       expect(config.redis_connect_timeout).to eq(3.0)
-      expect(config.redis_timeout).to eq(5.0)
+      expect(config.redis_timeout).to eq(10.0)
       expect(config.redis_reconnect_attempts).to eq(3)
     end
   end
