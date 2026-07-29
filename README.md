@@ -319,7 +319,7 @@ The full decision table:
 | Yes | Drained / empty | Empty | **OK, exit 0.** Worker arriving late -- everything was already taken by peers and this runner has no re-run memory. |
 | Yes | Has data | Empty | **Steal.** Classic run: pop batches from the shared queue (and record them to the rerun key if one is configured). |
 | Yes | Drained / empty | Has data | **Replay.** Classic re-run: ignore the shared queue and re-run exactly the recorded files. |
-| Yes | Has data | Has data | **Crash** (exit 1). Inconsistent state -- refuses to run to avoid double-executing. |
+| Yes | Has data | Has data | **Full rerun.** The queue was re-pushed while this runner still holds rerun memory from a previous run. The stale rerun key is deleted and the runner steals from the shared queue like a classic run, re-recording as it goes. |
 
 > **Empty key names count as "not provided".** A `--key-rerun` whose value is an empty string -- e.g. `--key-rerun "$VAR"` where `$VAR` is unset in CI -- is treated exactly like `--key-rerun` being absent. The same applies to `--key-failed`: an empty/unset name is treated as "not configured" and no failed files are recorded.
 
@@ -351,7 +351,7 @@ The full decision table:
 
 Key details:
 
-- **Replay reads non-destructively** (`LRANGE`, not `LPOP`). The rerun key is never consumed. If you re-run the same runner multiple times, it replays the same files every time.
+- **Replay reads non-destructively** (`LRANGE`, not `LPOP`). Replay never consumes the rerun key, so re-running the same runner multiple times replays the same files every time. The one case where the rerun key is deleted (`DEL`) is a **full rerun** -- the shared queue has data again while the rerun key still holds files from a previous run -- where the stale memory is reset and rebuilt from the newly stolen batches.
 - **The shared queue is never touched in replay mode**. Other runners are unaffected.
 - **Each runner has its own rerun key**. Only the re-run runner enters replay mode; runners that aren't re-run don't start at all.
 
@@ -429,6 +429,7 @@ specbandit push --key "pr-42-run-100" --key-ttl 259200 --pattern 'spec/**/*_spec
 - **Steal** uses `LPOP key count` (Redis 6.2+), which atomically pops up to N elements. No Lua scripts, no locks, no race conditions.
 - **Record** (when `--key-rerun` is set): after each steal, the batch is also `RPUSH`ed to the per-runner rerun key.
 - **Replay** (when the rerun key has data and the shared queue is drained): reads all files from the rerun key via `LRANGE` (non-destructive), splits into batches, and runs them locally. The shared queue is never touched.
+- **Full rerun** (when both the shared queue and the rerun key have data): the stale rerun key is removed with `DEL`, then the runner steals from the shared queue and re-records as in a classic run.
 - **Mode selection** is derived entirely from Redis (published marker + queue/rerun state) -- see the decision table above. There is no re-run flag or environment variable.
 - **Run** delegates to the configured adapter:
   - **CLI adapter**: spawns a shell command per batch via `Open3`, appending file paths as arguments. Works with any test runner.

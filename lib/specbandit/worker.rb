@@ -76,7 +76,7 @@ module Specbandit
     #   Yes       | empty/drained  | empty       | OK: worker arriving late (0)
     #   Yes       | has data       | empty       | Steal (record if rerun key set)
     #   Yes       | empty/drained  | has data    | Replay recorded files
-    #   Yes       | has data       | has data    | Crash: inconsistent (weird case)
+    #   Yes       | has data       | has data    | Full rerun: reset rerun key, steal
     #
     # "Published" is a durable marker written by `specbandit push`; it is the
     # only reliable signal that work was ever enqueued, because Redis
@@ -89,7 +89,7 @@ module Specbandit
       rerun_files = key_present?(key_rerun) ? queue.read_all(key_rerun) : []
 
       if key_has_data && rerun_files.any?
-        fail_inconsistent_state
+        run_full_rerun
       elsif rerun_files.any?
         run_replay(rerun_files)
       elsif key_has_data
@@ -119,14 +119,16 @@ module Specbandit
       1
     end
 
-    # Both the shared queue and this runner's rerun key hold files at once.
-    # That should never happen: a fresh run has no rerun memory yet, and a
-    # re-run reads from a drained queue. Crash instead of double-executing.
-    def fail_inconsistent_state
-      output.puts "[specbandit] ERROR: inconsistent state — shared queue '#{key}' still has files " \
-                  "while rerun key '#{key_rerun}' also has recorded files."
-      output.puts '[specbandit] Refusing to run to avoid double-execution / undefined behavior.'
-      1
+    # Both the shared queue and this runner's rerun key hold files: the queue
+    # was re-pushed while this runner still carries rerun memory from a
+    # previous run (a full rerun). The stored memory is stale -- discard it
+    # and steal from the shared queue like a classic run, re-recording each
+    # stolen batch as we go.
+    def run_full_rerun
+      output.puts "[specbandit] Shared queue '#{key}' and rerun key '#{key_rerun}' both have files. " \
+                  "Full rerun: resetting '#{key_rerun}' and working from '#{key}'."
+      queue.delete(key_rerun)
+      run_steal(record: true)
     end
 
     # Replay mode: run a known list of files in local batches.

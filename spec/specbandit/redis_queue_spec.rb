@@ -151,6 +151,14 @@ RSpec.describe Specbandit::RedisQueue do
     end
   end
 
+  describe '#delete' do
+    it 'removes the key via DEL' do
+      expect(redis_double).to receive(:del).with('my-key').and_return(1)
+
+      expect(queue.delete('my-key')).to eq(1)
+    end
+  end
+
   describe 'retry on connection failure' do
     before do
       allow(queue).to receive(:sleep)
