@@ -155,24 +155,43 @@ RSpec.describe Specbandit::Worker do
         end
       end
 
-      context 'when both the shared queue and the rerun key have data' do
+      context 'when both the shared queue and the rerun key have data (full rerun)' do
         before do
           allow(queue).to receive(:length).with(key).and_return(3)
           allow(queue).to receive(:read_all).with(key_rerun).and_return(['spec/x_spec.rb'])
+          allow(queue).to receive(:push)
         end
 
-        it 'crashes with exit code 1 (inconsistent state)' do
-          expect(queue).not_to receive(:steal)
+        it 'resets the rerun key before stealing from the shared queue' do
+          expect(queue).to receive(:delete).with(key_rerun).ordered
+          expect(queue).to receive(:steal).with(key, 2)
+                                          .and_return(['spec/a_spec.rb', 'spec/b_spec.rb']).ordered
+          expect(queue).to receive(:steal).with(key, 2).and_return([]).ordered
 
-          expect(worker.run).to eq(1)
-          expect(RSpec::Core::Runner).not_to have_received(:run)
+          expect(worker.run).to eq(0)
         end
 
-        it 'prints a clear "inconsistent state" error' do
+        it 're-records the stolen batches to the rerun key' do
+          allow(queue).to receive(:delete).with(key_rerun)
+          expect(queue).to receive(:steal).with(key, 2)
+                                          .and_return(['spec/a_spec.rb', 'spec/b_spec.rb'])
+          expect(queue).to receive(:steal).with(key, 2).and_return([])
+
           worker.run
 
-          expect(output.string).to include('ERROR')
-          expect(output.string).to include('inconsistent state')
+          expect(queue).to have_received(:push)
+            .with(key_rerun, ['spec/a_spec.rb', 'spec/b_spec.rb'], ttl: Specbandit::Configuration::DEFAULT_KEY_TTL)
+        end
+
+        it 'explains the full-rerun reset instead of crashing' do
+          allow(queue).to receive(:delete).with(key_rerun)
+          allow(queue).to receive(:steal).with(key, 2).and_return([])
+
+          worker.run
+
+          expect(output.string).to include('Full rerun')
+          expect(output.string).to include("resetting '#{key_rerun}'")
+          expect(output.string).not_to include('ERROR')
         end
       end
     end

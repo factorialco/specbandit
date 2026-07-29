@@ -88,6 +88,12 @@ module Specbandit
       with_retries { redis.lrange(key, 0, -1) }
     end
 
+    # Remove a key entirely. Used to discard stale rerun memory when a
+    # full rerun starts over from the shared queue.
+    def delete(key)
+      with_retries { redis.del(key) }
+    end
+
     def close
       redis.close
     end
