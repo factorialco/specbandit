@@ -159,6 +159,20 @@ RSpec.describe Specbandit::RedisQueue do
     end
   end
 
+  describe '#clear' do
+    it 'removes the queue and its published marker in a single DEL' do
+      expect(redis_double).to receive(:del).with('my-key', 'my-key:published').and_return(2)
+
+      expect(queue.clear('my-key')).to eq(2)
+    end
+
+    it 'reports 0 when neither key exists' do
+      expect(redis_double).to receive(:del).with('my-key', 'my-key:published').and_return(0)
+
+      expect(queue.clear('my-key')).to eq(0)
+    end
+  end
+
   describe 'retry on connection failure' do
     before do
       allow(queue).to receive(:sleep)

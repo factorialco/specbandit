@@ -94,6 +94,17 @@ module Specbandit
       with_retries { redis.del(key) }
     end
 
+    # Remove a queue and its published marker together, so the key is back to
+    # the state it had before anything was ever pushed to it. A producer calls
+    # this before pushing: the queue key is not scoped by run attempt, so a
+    # second attempt would otherwise stack another copy of the work list on
+    # top of whatever the first attempt left behind.
+    #
+    # Returns the number of keys removed (0, 1 or 2).
+    def clear(key)
+      with_retries { redis.del(key, published_marker(key)) }
+    end
+
     def close
       redis.close
     end
