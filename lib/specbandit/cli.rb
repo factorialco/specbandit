@@ -4,7 +4,7 @@ require 'optparse'
 
 module Specbandit
   class CLI
-    COMMANDS = %w[push work].freeze
+    COMMANDS = %w[push work reset].freeze
 
     def self.run(argv = ARGV)
       new(argv).execute
@@ -24,6 +24,8 @@ module Specbandit
         run_push
       when 'work'
         run_work
+      when 'reset'
+        run_reset
       when nil, '-h', '--help'
         print_usage
         0
@@ -46,7 +48,7 @@ module Specbandit
     private
 
     def run_push
-      options = { pattern: nil }
+      options = { pattern: nil, reset: false }
 
       parser = OptionParser.new do |opts|
         opts.banner = 'Usage: specbandit push [options] [files...]'
@@ -67,6 +69,10 @@ module Specbandit
           Specbandit.configuration.key_ttl = v
         end
 
+        opts.on('--reset', 'Empty the key before pushing, so a re-run cannot enqueue a second copy') do
+          options[:reset] = true
+        end
+
         opts.on('-h', '--help', 'Show this help') do
           puts opts
           return 0
@@ -78,9 +84,49 @@ module Specbandit
 
       publisher = Publisher.new
       files_arg = argv.empty? ? [] : argv
-      count = publisher.publish(files: files_arg, pattern: options[:pattern])
+      count = publisher.publish(files: files_arg, pattern: options[:pattern], reset: options[:reset])
 
       count.positive? ? 0 : 1
+    end
+
+    # Empty a queue key and its published marker, leaving it as if nothing had
+    # ever been pushed. Standalone counterpart to `push --reset`, for callers
+    # that clean up separately from the push.
+    def run_reset
+      parser = OptionParser.new do |opts|
+        opts.banner = 'Usage: specbandit reset [options]'
+
+        opts.on('--key KEY', 'Redis queue key (required, or set SPECBANDIT_KEY)') do |v|
+          Specbandit.configuration.key = v
+        end
+
+        opts.on('--redis-url URL', 'Redis URL (default: redis://localhost:6379)') do |v|
+          Specbandit.configuration.redis_url = v
+        end
+
+        opts.on('-h', '--help', 'Show this help') do
+          puts opts
+          return 0
+        end
+      end
+
+      parser.parse!(argv)
+      Specbandit.configuration.validate!
+
+      key = Specbandit.configuration.key
+      queue = RedisQueue.new
+
+      begin
+        stale = queue.length(key)
+        queue.clear(key)
+        puts "[specbandit] Reset key '#{key}': discarded #{stale} queued files."
+      ensure
+        queue.close
+      end
+
+      # Removing nothing is a valid outcome: the caller asked for an empty key
+      # and got one.
+      0
     end
 
     def run_work
@@ -200,12 +246,22 @@ module Specbandit
         Usage:
           specbandit push [options] [files...]           Enqueue test files into Redis
           specbandit work [options] [-- extra-opts...]   Steal and run test file batches
+          specbandit reset [options]                     Empty a queue key and its published marker
 
         Push options:
           --key KEY              Redis queue key (required, or set SPECBANDIT_KEY)
           --pattern PATTERN      Glob pattern for file discovery (e.g. 'spec/**/*_spec.rb')
           --redis-url URL        Redis URL (default: redis://localhost:6379)
           --key-ttl SECONDS      TTL for all Redis keys (default: 604800 / 1 week)
+          --reset                Empty the key before pushing (see Reset options)
+
+        Reset options:
+          --key KEY              Redis queue key (required, or set SPECBANDIT_KEY)
+          --redis-url URL        Redis URL (default: redis://localhost:6379)
+
+          Deletes the queue list and its ':published' marker, leaving the key as if
+          nothing had ever been pushed. Per-runner rerun and failed keys are left
+          alone, so a re-run of a single shard can still replay its own files.
 
         Work options:
           --key KEY              Redis queue key (required, or set SPECBANDIT_KEY)

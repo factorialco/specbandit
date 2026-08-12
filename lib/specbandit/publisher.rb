@@ -17,14 +17,22 @@ module Specbandit
     # Resolve files from the three input sources (priority: stdin > pattern > args)
     # and push them onto the Redis queue.
     #
+    # With `reset: true` the key is emptied first, so the queue ends up holding
+    # exactly this work list even if an earlier attempt already pushed one.
+    #
     # Returns the number of files enqueued.
-    def publish(files: [], pattern: nil)
+    def publish(files: [], pattern: nil, reset: false)
       resolved = resolve_files(files: files, pattern: pattern)
 
       if resolved.empty?
         output.puts '[specbandit] No files to enqueue.'
         return 0
       end
+
+      # Only reset once there is something to put in its place. Clearing on an
+      # empty push would drop the marker too and leave workers crashing on a
+      # key that looks like it was never published.
+      reset_key if reset
 
       push_ms = measure { queue.push(key, resolved, ttl: key_ttl) }
       # Record a durable "published" marker so workers can tell a drained
@@ -39,6 +47,20 @@ module Specbandit
     end
 
     private
+
+    # Empty the key before pushing. The leftover count is reported because a
+    # non-zero one means an earlier attempt pushed a list that no worker ever
+    # consumed, which is worth seeing in the producer's log.
+    def reset_key
+      stale = queue.length(key)
+      queue.clear(key)
+
+      if stale.positive?
+        output.puts "[specbandit] Reset key '#{key}': discarded #{stale} queued files from a previous push."
+      else
+        output.puts "[specbandit] Reset key '#{key}': nothing left over."
+      end
+    end
 
     # Run the block and return the wall-clock time it took, in milliseconds.
     # Used to surface how long the Redis round-trips took in the push log.

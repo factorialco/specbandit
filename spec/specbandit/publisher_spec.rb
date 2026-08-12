@@ -80,4 +80,54 @@ RSpec.describe Specbandit::Publisher do
       expect(output.string).to include('No files to enqueue')
     end
   end
+
+  describe '#publish with reset' do
+    let(:files) { ['spec/a_spec.rb', 'spec/b_spec.rb'] }
+
+    before do
+      allow(queue).to receive(:push).with(key, files, ttl: 21_600).and_return(2)
+      allow(queue).to receive(:mark_published).with(key, ttl: 21_600)
+    end
+
+    it 'clears the key before pushing' do
+      allow(queue).to receive(:length).with(key).and_return(0)
+
+      expect(queue).to receive(:clear).with(key).ordered
+      expect(queue).to receive(:push).with(key, files, ttl: 21_600).and_return(2).ordered
+
+      publisher.publish(files: files, reset: true)
+    end
+
+    it 'reports how many files an earlier push left behind' do
+      allow(queue).to receive(:length).with(key).and_return(4213)
+      allow(queue).to receive(:clear).with(key)
+
+      publisher.publish(files: files, reset: true)
+
+      expect(output.string).to include("Reset key '#{key}': discarded 4213 queued files from a previous push.")
+    end
+
+    it 'says so when the key was already empty' do
+      allow(queue).to receive(:length).with(key).and_return(0)
+      allow(queue).to receive(:clear).with(key)
+
+      publisher.publish(files: files, reset: true)
+
+      expect(output.string).to include("Reset key '#{key}': nothing left over.")
+    end
+
+    it 'does not clear when reset is not requested' do
+      expect(queue).not_to receive(:clear)
+
+      publisher.publish(files: files)
+    end
+
+    # Clearing here would drop the published marker with nothing to replace it,
+    # and every worker on the key would then crash as "never published".
+    it 'does not clear when there is nothing to push' do
+      expect(queue).not_to receive(:clear)
+
+      expect(publisher.publish(files: [], reset: true)).to eq(0)
+    end
+  end
 end

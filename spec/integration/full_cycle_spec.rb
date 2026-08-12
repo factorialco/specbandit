@@ -63,6 +63,42 @@ RSpec.describe 'Full cycle integration', :integration do
     queue.close
   end
 
+  # The bug this guards against: the queue key is scoped by run id, not run
+  # attempt, so a producer that runs twice used to leave two copies of the work
+  # list. Files then ran twice, and two copies reaching the same worker were
+  # loaded twice in one process.
+  it 'holds one copy of the work list when a push is repeated with reset' do
+    files = (1..7).map { |i| "spec/fake_#{i}_spec.rb" }
+    queue = Specbandit::RedisQueue.new(redis_url: redis_url)
+    publisher = Specbandit::Publisher.new(key: key, queue: queue, output: output)
+
+    publisher.publish(files: files)
+    publisher.publish(files: files)
+    expect(queue.length(key)).to eq(14)
+
+    publisher.publish(files: files, reset: true)
+
+    expect(queue.length(key)).to eq(7)
+    expect(queue.read_all(key).sort).to eq(files.sort)
+    # The marker has to come back, or every worker on this key crashes as
+    # "never published".
+    expect(queue.published?(key)).to be(true)
+
+    queue.close
+  end
+
+  it 'leaves the key unpublished after a standalone reset' do
+    queue = Specbandit::RedisQueue.new(redis_url: redis_url)
+    Specbandit::Publisher.new(key: key, queue: queue, output: output)
+                         .publish(files: ['spec/fake_1_spec.rb'])
+
+    expect(queue.clear(key)).to eq(2)
+    expect(queue.length(key)).to eq(0)
+    expect(queue.published?(key)).to be(false)
+
+    queue.close
+  end
+
   it 'publisher and worker work end-to-end' do
     Specbandit.configure do |c|
       c.redis_url = redis_url
@@ -183,7 +219,7 @@ RSpec.describe 'Full cycle integration', :integration do
 
     redis_queue.close
   ensure
-    @redis&.del(key_failed) if key_failed
+    @redis&.del(key_failed, "#{key_failed}:published") if key_failed
     FileUtils.rm_rf(dir) if dir
   end
 end
