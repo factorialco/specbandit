@@ -442,6 +442,35 @@ RSpec.describe Specbandit::Worker do
 
           worker.run
         end
+
+        it 'records the spec file, not the shared examples file, for a failure in shared examples' do
+          expect(queue).to receive(:steal).with(key, 3)
+                                          .and_return(['./spec/a_spec.rb', './spec/b_spec.rb'])
+          expect(queue).to receive(:steal).with(key, 3).and_return([])
+
+          allow(RSpec::Core::Runner).to receive(:run) do |args, _err, _out|
+            json_path = json_out_from_args(args)
+            if json_path
+              json_data = {
+                'examples' => [
+                  { 'id' => './spec/a_spec.rb[1:2:1]', 'status' => 'failed',
+                    'file_path' => './spec/support/shared_examples.rb' },
+                  { 'id' => './spec/b_spec.rb[1:1]', 'status' => 'passed',
+                    'file_path' => './spec/b_spec.rb' }
+                ],
+                'summary' => { 'duration' => 1.0, 'example_count' => 2, 'failure_count' => 1,
+                               'pending_count' => 0, 'errors_outside_of_examples_count' => 0 }
+              }
+              File.write(json_path, JSON.generate(json_data))
+            end
+            1
+          end
+
+          expect(queue).to receive(:push)
+            .with(key_failed, ['./spec/a_spec.rb'], ttl: 604_800)
+
+          worker.run
+        end
       end
 
       context 'in steal mode' do
