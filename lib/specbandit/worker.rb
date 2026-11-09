@@ -240,12 +240,23 @@ module Specbandit
       data = JSON.parse(File.read(result.json_path))
       failed = data.fetch('examples', [])
                    .select { |e| e['status'] == 'failed' }
-                   .filter_map { |e| e['file_path'] }
+                   .filter_map { |e| spec_file_of(e) }
                    .uniq
 
       failed.empty? ? nil : failed
     rescue JSON::ParserError
       nil
+    end
+
+    # The spec file that defines an example's top-level group. RSpec's `file_path`
+    # is where the example block is written, which for shared examples is the
+    # support file: retrying that file runs zero examples and passes. The example
+    # `id` is `<rerun file>[<scoped id>]`, and its file is always the loaded spec.
+    def spec_file_of(example)
+      id = example['id']
+      return example['file_path'] unless id
+
+      id.sub(/\[[\d:]+\]\z/, '')
     end
 
     # Process a BatchResult: store it, and for RSpec batches,
