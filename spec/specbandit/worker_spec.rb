@@ -722,6 +722,123 @@ RSpec.describe Specbandit::Worker do
       end
     end
 
+    context 'fail-fast' do
+      let(:key_rerun) { nil }
+
+      subject(:worker) do
+        described_class.new(
+          key: key,
+          batch_size: 2,
+          rspec_opts: [],
+          key_rerun: key_rerun,
+          fail_fast: true,
+          queue: queue,
+          output: output
+        )
+      end
+
+      before do
+        allow(queue).to receive(:delete)
+        allow(queue).to receive(:push)
+      end
+
+      it 'stops after the first failed batch and prunes the shared queue' do
+        allow(queue).to receive(:steal).with(key, 2).and_return(['spec/a_spec.rb'], ['spec/b_spec.rb'],
+                                                                ['spec/c_spec.rb'], [])
+        allow(queue).to receive(:length).with(key).and_return(1, 7)
+        allow(RSpec::Core::Runner).to receive(:run).and_return(0, 1, 0)
+
+        exit_code = worker.run
+
+        expect(exit_code).to eq(1)
+        expect(queue).to have_received(:steal).twice
+        expect(RSpec::Core::Runner).to have_received(:run).twice
+        expect(queue).to have_received(:delete).with(key)
+        expect(output.string).to include(
+          "Fail-fast: batch #2 failed. Pruned 7 pending files from '#{key}'. Stopping."
+        )
+      end
+
+      it 'keeps the published marker so late workers exit cleanly' do
+        allow(queue).to receive(:steal).with(key, 2).and_return(['spec/a_spec.rb'], [])
+        allow(RSpec::Core::Runner).to receive(:run).and_return(1)
+        expect(queue).not_to receive(:clear)
+
+        worker.run
+
+        # Only the list is deleted; #clear would also drop the ':published' marker.
+        expect(queue).to have_received(:delete).once.with(key)
+      end
+
+      it 'does not prune when every batch passes' do
+        allow(queue).to receive(:steal).with(key, 2).and_return(['spec/a_spec.rb'], ['spec/b_spec.rb'], [])
+
+        exit_code = worker.run
+
+        expect(exit_code).to eq(0)
+        expect(RSpec::Core::Runner).to have_received(:run).twice
+        expect(queue).not_to have_received(:delete)
+      end
+
+      it 'does not prune or stop without the flag' do
+        no_fail_fast = described_class.new(
+          key: key, batch_size: 2, rspec_opts: [], key_rerun: nil,
+          fail_fast: false, queue: queue, output: output
+        )
+        allow(queue).to receive(:steal).with(key, 2).and_return(['spec/a_spec.rb'], ['spec/b_spec.rb'], [])
+        allow(RSpec::Core::Runner).to receive(:run).and_return(1, 0)
+
+        exit_code = no_fail_fast.run
+
+        expect(exit_code).to eq(1)
+        expect(RSpec::Core::Runner).to have_received(:run).twice
+        expect(queue).not_to have_received(:delete)
+      end
+
+      context 'in record mode' do
+        let(:key_rerun) { 'pr-123-run-456-runner-1' }
+
+        before do
+          allow(queue).to receive(:read_all).with(key_rerun).and_return([])
+        end
+
+        it 'prunes the shared queue and keeps what was already recorded' do
+          allow(queue).to receive(:steal).with(key, 2).and_return(['spec/a_spec.rb'], ['spec/b_spec.rb'], [])
+          allow(RSpec::Core::Runner).to receive(:run).and_return(1)
+
+          exit_code = worker.run
+
+          expect(exit_code).to eq(1)
+          expect(queue).to have_received(:push).with(key_rerun, ['spec/a_spec.rb'], ttl: anything)
+          expect(queue).to have_received(:delete).with(key)
+          expect(queue).not_to have_received(:delete).with(key_rerun)
+        end
+      end
+
+      context 'in replay mode' do
+        let(:key_rerun) { 'pr-123-run-456-runner-3' }
+
+        before do
+          allow(queue).to receive(:length).with(key).and_return(0)
+          allow(queue).to receive(:read_all).with(key_rerun)
+                                            .and_return(['spec/x_spec.rb', 'spec/y_spec.rb', 'spec/z_spec.rb'])
+        end
+
+        it 'stops after the first failed batch without touching the shared queue' do
+          allow(RSpec::Core::Runner).to receive(:run).and_return(1)
+          expect(queue).not_to receive(:steal)
+
+          exit_code = worker.run
+
+          expect(exit_code).to eq(1)
+          # 3 files with batch_size 2 would be 2 batches; fail-fast stops after the first.
+          expect(RSpec::Core::Runner).to have_received(:run).once
+          expect(queue).not_to have_received(:delete)
+          expect(output.string).to include('Fail-fast: batch #1 failed. Skipping the remaining replay files.')
+        end
+      end
+    end
+
     context 'verbose mode' do
       subject(:worker) do
         described_class.new(
