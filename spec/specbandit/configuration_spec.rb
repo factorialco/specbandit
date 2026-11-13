@@ -46,6 +46,10 @@ RSpec.describe Specbandit::Configuration do
       expect(config.key_failed).to be_nil
     end
 
+    it 'has fail_fast off by default' do
+      expect(config.fail_fast).to be(false)
+    end
+
     it 'has nil report by default' do
       expect(config.report).to be_nil
     end
@@ -75,7 +79,8 @@ RSpec.describe Specbandit::Configuration do
         'SPECBANDIT_REDIS_MAX_ATTEMPTS',
         'SPECBANDIT_REDIS_CONNECT_TIMEOUT',
         'SPECBANDIT_REDIS_TIMEOUT',
-        'SPECBANDIT_REDIS_RECONNECT_ATTEMPTS'
+        'SPECBANDIT_REDIS_RECONNECT_ATTEMPTS',
+        'SPECBANDIT_FAIL_FAST'
       )
       example.run
     ensure
@@ -84,9 +89,15 @@ RSpec.describe Specbandit::Configuration do
         SPECBANDIT_KEY_TTL SPECBANDIT_KEY_RERUN SPECBANDIT_ADAPTER SPECBANDIT_COMMAND
         SPECBANDIT_COMMAND_OPTS SPECBANDIT_KEY_FAILED SPECBANDIT_REPORT
         SPECBANDIT_REDIS_MAX_ATTEMPTS SPECBANDIT_REDIS_CONNECT_TIMEOUT SPECBANDIT_REDIS_TIMEOUT
-        SPECBANDIT_REDIS_RECONNECT_ATTEMPTS
+        SPECBANDIT_REDIS_RECONNECT_ATTEMPTS SPECBANDIT_FAIL_FAST
       ].each { |k| ENV.delete(k) }
       original_env.each { |k, v| ENV[k] = v }
+    end
+
+    it 'reads fail_fast from SPECBANDIT_FAIL_FAST' do
+      ENV['SPECBANDIT_FAIL_FAST'] = 'yes'
+      config = described_class.new
+      expect(config.fail_fast).to be(true)
     end
 
     it 'reads redis_url from SPECBANDIT_REDIS_URL' do
@@ -202,6 +213,40 @@ RSpec.describe Specbandit::Configuration do
     it 'passes when key and batch_size are valid' do
       config.key = 'valid-key'
       config.batch_size = 3
+      expect { config.validate! }.not_to raise_error
+    end
+  end
+
+  describe '#validate_work!' do
+    before { config.key = 'valid-key' }
+
+    it 'runs the generic checks too' do
+      config.key = nil
+      expect { config.validate_work! }.to raise_error(Specbandit::Error, /key is required/)
+    end
+
+    it 'raises when fail_fast is combined with a failed key' do
+      config.fail_fast = true
+      config.key_failed = 'valid-key-failed'
+      expect { config.validate_work! }.to raise_error(
+        Specbandit::Error, /--fail-fast cannot be used with --key-failed/
+      )
+    end
+
+    it 'passes when the failed key is an empty string (treated as not set)' do
+      config.fail_fast = true
+      config.key_failed = ''
+      expect { config.validate_work! }.not_to raise_error
+    end
+
+    it 'passes when fail_fast is off and a failed key is set' do
+      config.key_failed = 'valid-key-failed'
+      expect { config.validate_work! }.not_to raise_error
+    end
+
+    it 'does not affect #validate! (push and reset)' do
+      config.fail_fast = true
+      config.key_failed = 'valid-key-failed'
       expect { config.validate! }.not_to raise_error
     end
   end

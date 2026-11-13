@@ -185,6 +185,10 @@ module Specbandit
           Specbandit.configuration.verbose = true
         end
 
+        opts.on('--fail-fast', 'Stop at the first failed batch and empty the shared queue') do
+          Specbandit.configuration.fail_fast = true
+        end
+
         opts.on('-h', '--help', 'Show this help') do
           puts opts
           return 0
@@ -200,7 +204,7 @@ module Specbandit
       config = Specbandit.configuration
       adapter = build_adapter(config, extra_opts)
 
-      config.validate!
+      config.validate_work!
 
       worker = Worker.new(adapter: adapter)
       worker.run
@@ -276,6 +280,9 @@ module Specbandit
           --key-ttl SECONDS      TTL for all Redis keys (default: 604800 / 1 week)
           --report FILE          Write JSON report to FILE after run
           --verbose              Show per-batch file list and full command output
+          --fail-fast            Stop at the first failed batch and remove the pending
+                                 files from the shared queue, so other workers stop too.
+                                 Cannot be used with --key-failed
 
           Arguments after -- are forwarded to the adapter (rspec opts, command opts, etc.).
           They are merged with --command-opts or --rspec-opts if both are provided.
@@ -293,6 +300,7 @@ module Specbandit
           SPECBANDIT_KEY_FAILED       Redis key for failed test files
           SPECBANDIT_VERBOSE          Enable verbose output (1/true/yes)
           SPECBANDIT_REPORT           Path to write JSON report file
+          SPECBANDIT_FAIL_FAST        Stop at the first failed batch (1/true/yes)
 
         File input priority for push:
           1. stdin (piped)     echo "spec/a_spec.rb" | specbandit push --key KEY

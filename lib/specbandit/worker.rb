@@ -5,7 +5,7 @@ require 'json'
 module Specbandit
   class Worker
     attr_reader :queue, :key, :batch_size, :adapter, :key_rerun, :key_ttl, :key_failed,
-                :output, :verbose, :report
+                :output, :verbose, :report, :fail_fast
 
     def initialize(
       key: Specbandit.configuration.key,
@@ -16,6 +16,7 @@ module Specbandit
       key_failed: Specbandit.configuration.key_failed,
       verbose: Specbandit.configuration.verbose,
       report: Specbandit.configuration.report,
+      fail_fast: Specbandit.configuration.fail_fast,
       queue: nil,
       output: $stdout,
       # Legacy parameter for backward compatibility.
@@ -29,6 +30,7 @@ module Specbandit
       @key_failed = key_failed
       @verbose = verbose
       @report = report
+      @fail_fast = fail_fast
       @queue = queue || RedisQueue.new
       @output = output
       @batch_results = []
@@ -153,6 +155,11 @@ module Specbandit
         if result.exit_code != 0
           output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{result.exit_code})" if verbose
           failed = true
+          if fail_fast
+            # Replay never touches the shared queue, so there is nothing to prune.
+            output.puts "[specbandit] Fail-fast: batch ##{batch_num} failed. Skipping the remaining replay files."
+            break
+          end
         elsif verbose
           output.puts "[specbandit] Batch ##{batch_num} passed."
         end
@@ -197,6 +204,10 @@ module Specbandit
         if result.exit_code != 0
           output.puts "[specbandit] Batch ##{batch_num} FAILED (exit code: #{result.exit_code})" if verbose
           failed = true
+          if fail_fast
+            prune_queue(batch_num)
+            break
+          end
         elsif verbose
           output.puts "[specbandit] Batch ##{batch_num} passed."
         end
@@ -209,6 +220,19 @@ module Specbandit
       end
 
       failed ? 1 : 0
+    end
+
+    # Fail-fast: empty the shared queue so no worker steals more files.
+    #
+    # Only the list is deleted. The published marker stays, so a worker that
+    # checks the queue after this sees "published but drained" and exits 0,
+    # instead of crashing with "never published". Workers with a batch in
+    # flight finish it, then find the queue empty and stop.
+    def prune_queue(batch_num)
+      pending = queue.length(key)
+      queue.delete(key)
+      output.puts "[specbandit] Fail-fast: batch ##{batch_num} failed. " \
+                  "Pruned #{pending} pending files from '#{key}'. Stopping."
     end
 
     # Record failed files to the failed key in Redis for later review.

@@ -5,7 +5,7 @@ module Specbandit
     attr_accessor :redis_url, :batch_size, :key, :rspec_opts, :key_ttl,
                   :key_rerun, :verbose,
                   :adapter, :command, :command_opts,
-                  :key_failed, :report,
+                  :key_failed, :report, :fail_fast,
                   :redis_max_attempts, :redis_connect_timeout, :redis_timeout,
                   :redis_reconnect_attempts
 
@@ -42,6 +42,7 @@ module Specbandit
       @command_opts = parse_space_separated(ENV.fetch('SPECBANDIT_COMMAND_OPTS', nil))
       @key_failed = ENV.fetch('SPECBANDIT_KEY_FAILED', nil)
       @report = ENV.fetch('SPECBANDIT_REPORT', nil)
+      @fail_fast = env_truthy?('SPECBANDIT_FAIL_FAST')
 
       @redis_max_attempts = Integer(ENV.fetch('SPECBANDIT_REDIS_MAX_ATTEMPTS', DEFAULT_REDIS_MAX_ATTEMPTS))
       @redis_connect_timeout = Float(ENV.fetch('SPECBANDIT_REDIS_CONNECT_TIMEOUT', DEFAULT_REDIS_CONNECT_TIMEOUT))
@@ -54,6 +55,20 @@ module Specbandit
       raise Error, 'batch_size must be a positive integer' unless batch_size.positive?
       raise Error, 'key_ttl must be a positive integer' unless key_ttl.positive?
       raise Error, 'redis_max_attempts must be a positive integer' unless redis_max_attempts.positive?
+    end
+
+    # Checks that only `work` needs. Kept apart from validate! so that a
+    # CI-wide SPECBANDIT_FAIL_FAST cannot break `push` or `reset`.
+    def validate_work!
+      validate!
+
+      # The failed key feeds a later retry pass. Fail-fast prunes the queue at
+      # the first failure, so most files never run and the retry list would be
+      # incomplete. An empty key name counts as not set, like everywhere else.
+      return unless fail_fast && !key_failed.nil? && !key_failed.empty?
+
+      raise Error, '--fail-fast cannot be used with --key-failed: fail-fast stops at the first failure, ' \
+                   'so the failed key would not hold a complete list to retry'
     end
 
     private
